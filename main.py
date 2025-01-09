@@ -1,3 +1,5 @@
+import random
+
 import ubluetooth
 from machine import Timer, Pin, I2C
 import time
@@ -11,44 +13,58 @@ TELE-ESP-BOARD LEDS:
     G: ?? 
 '''
 
+# Set this to enable/disable ssd1306 display functionality
+DISPLAY = 1
+
+# Set this to enable/disable BME280 temperature/pressure/humidity sensor.
+# If setting this to 0, data will be simulated.
+TEMP_SENSOR = 1
+
+
 class Display:
 
     def __init__(self, i2c_obj):
-        self.last_status = []
-        self._priority_flag = False
-        self.text_timer = Timer(-1)
-        self.oled = ssd1306.SSD1306_I2C(128, 64, i2c_obj)  # Display OLED 128x64
+        if DISPLAY:
+            self.last_status = []
+            self._priority_flag = False
+            self.text_timer = Timer(-1)
+            self.oled = ssd1306.SSD1306_I2C(128, 64, i2c_obj)  # Display OLED 128x64
+        else:
+            print("Adafruit SSD1306 is disabled by current configuration.")
 
     def write_text(self, text, x=0, y=0, clear=True):
-        if [text, x, y, clear] != self.last_status and not self._priority_flag:
-            if clear:
-                self.oled.fill(0)  # Pulisce lo schermo
+        if DISPLAY:
+            if [text, x, y, clear] != self.last_status and not self._priority_flag:
+                if clear:
+                    self.oled.fill(0)  # Pulisce lo schermo
 
+                lines = self._wrap_text(text) if len(text) > 14 else [text]
+                for i, line in enumerate(lines):
+                    self.oled.text(line, x, y + i * 10)  # Adjust y-offset for each line
+                self.oled.show()
+                self.last_status = [text, x, y, clear]
+
+            if self._priority_flag:  # queue text, it will be displayed after important message
+                self.last_status = [text, x, y, clear]
+
+    def clear_permanent_text(self, timer):  # WIP, DON'T USE
+        if DISPLAY:
+            self.oled.fill(0)
+            self._priority_flag = False
+            print(self._priority_flag)
+            self.text_timer.deinit()
+            print(self.last_status)
+            self.write_text(*self.last_status)
+
+    def write_permanent_text(self, text, x=0, y=0, duration=1):  # WIP, DON'T USE
+        if DISPLAY:
+            self.oled.fill(0)
             lines = self._wrap_text(text) if len(text) > 14 else [text]
             for i, line in enumerate(lines):
                 self.oled.text(line, x, y + i * 10)  # Adjust y-offset for each line
             self.oled.show()
-            self.last_status = [text, x, y, clear]
-
-        if self._priority_flag:  # queue text, it will be displayed after important message
-            self.last_status = [text, x, y, clear]
-
-    def clear_permanent_text(self, timer):
-        self.oled.fill(0)
-        self._priority_flag = False
-        print(self._priority_flag)
-        self.text_timer.deinit()
-        print(self.last_status)
-        self.write_text(*self.last_status)
-
-    def write_permanent_text(self, text, x=0, y=0, duration=1):
-        self.oled.fill(0)
-        lines = self._wrap_text(text) if len(text) > 14 else [text]
-        for i, line in enumerate(lines):
-            self.oled.text(line, x, y + i * 10)  # Adjust y-offset for each line
-        self.oled.show()
-        self._priority_flag = True
-        self.text_timer.init(period=duration * 1000, mode=Timer.ONE_SHOT, callback=self.clear_permanent_text)
+            self._priority_flag = True
+            self.text_timer.init(period=duration * 1000, mode=Timer.ONE_SHOT, callback=self.clear_permanent_text)
 
     def _wrap_text(self, text):
         """Wraps text to fit within 14 characters per line (more efficiently)."""
@@ -121,7 +137,10 @@ class SafeHelmet:
         self.adv_led.value(0)
         self.adv_timer = Timer(-1)  # Timer per il lampeggio del LED di advertising
 
-        self.temp_sensor = bme280.BME280(i2c=self.i2c)
+        if TEMP_SENSOR:
+            self.temp_sensor = bme280.BME280(i2c=self.i2c)
+        else:
+            print("BME280 is disabled by current configuration. Data will be simulated")
 
         # Impostazioni per il display OLED
         self.display = Display(self.i2c)
@@ -137,14 +156,13 @@ class SafeHelmet:
             self.adv_led.value(0)
 
             self.timer.init(period=self.interval * 1000, mode=Timer.PERIODIC, callback=self._collect_and_send_data)
-            self.display.write_permanent_text("permanent",duration=10)
 
         elif event == 2:  # Disconnessione
             conn_handle, _, _ = data
             self._connections.remove(conn_handle)
             print("Device disconnected")
             self._start_advertising()
-            self.display.write_text('Waiting for connection...', y=16)
+            #self.display.write_text('Waiting for connection...', y=16)
         elif event == 3:  # Scrittura su caratteristica
             print("Writing is not supported on this characteristic")
 
@@ -157,7 +175,7 @@ class SafeHelmet:
 
         # Avvia lampeggio del LED durante l'advertising
         self.adv_timer.init(period=500, mode=Timer.PERIODIC, callback=self._toggle_adv_led)
-
+        self.display.write_text('Waiting for connection...', y=16)
         print("SafeHelmet is advertising...")
 
     def _toggle_adv_led(self, timer):
@@ -172,10 +190,14 @@ class SafeHelmet:
             return  # Nessun dispositivo connesso, non inviare dati
 
         self.collect_led.value(1)
-        # Legge i dati dal sensore BME280
-        temperature, pressure, _ = self.temp_sensor.read_compensated_data()
-        temperature = temperature  # Temperatura in °C
-        pressure = pressure / 100  # Pressione in hPa
+        # Legge i dati dal sensore BME280, altrimenti li simula
+        if TEMP_SENSOR:
+            temperature, pressure, _ = self.temp_sensor.read_compensated_data()
+        else:
+            pressure = random.uniform(1000, 1050)
+            temperature = random.uniform(20.0, 22.0)
+
+        pressure /= 100  # Pressione in hPa
 
         print("Temperature: {:.1f} / Pressure: {:.1f}".format(temperature, pressure))
 
@@ -205,7 +227,7 @@ class SafeHelmet:
         self.standby = True
         self.timer.deinit()  # Ferma la raccolta periodica di dati
 
-        self.display.write_text('--Standby mode--')
+        self.display.write_text('Standby mode')
 
         self.standby_timer.init(period=1000, mode=Timer.PERIODIC, callback=self._standby_mode)
 
@@ -214,7 +236,12 @@ class SafeHelmet:
         self._check_exit_standby()
 
     def _check_exit_standby(self):
-        temperature, _, _ = self.temp_sensor.read_compensated_data()
+        if TEMP_SENSOR:
+            temperature, pressure, _ = self.temp_sensor.read_compensated_data()
+        else:
+            pressure = random.uniform(1000, 1050)
+            temperature = random.uniform(20.0, 22.0)
+
         if temperature <= 23:
             print("Exiting standby mode...")
             for conn_handle in self._connections:
