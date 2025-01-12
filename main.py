@@ -2,7 +2,6 @@ import random
 
 import ubluetooth
 from machine import Timer, Pin, I2C
-import time
 import bme280
 import ssd1306
 
@@ -231,6 +230,7 @@ class SafeHelmet:
             print("Exiting standby mode...")
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._state_handle, b"Exiting standby")
+
 
             self.standby = False
             self.standby_led.value(0)
