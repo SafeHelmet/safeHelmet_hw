@@ -18,7 +18,7 @@ DISPLAY = 1
 
 # Set this to enable/disable BME280 temperature/pressure/humidity sensor.
 # If setting this to 0, data will be simulated.
-TEMP_SENSOR = 1
+TEMP_SENSOR = 0
 
 
 class Display:
@@ -237,7 +237,7 @@ class SafeHelmet:
 
 
 # Esegui il server BLE per sensori
-ble_sensor = SafeHelmet(data_interval=5, led_interval=10)
+ble_sensor = SafeHelmet(data_interval=5)
 
 try:
     while True:
