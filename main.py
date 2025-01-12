@@ -2,9 +2,10 @@ import random
 
 import ubluetooth
 from machine import Timer, Pin, I2C
-import bme280
 import ssd1306
-
+from MPU6050 import MPU6050
+from bh1750 import BH1750
+import dht
 '''
 TELE-ESP-BOARD LEDS:
     R: D25
@@ -15,9 +16,9 @@ TELE-ESP-BOARD LEDS:
 # Set this to enable/disable ssd1306 display functionality
 DISPLAY = 1
 
-# Set this to enable/disable BME280 temperature/pressure/humidity sensor.
+# Set this to enable/disable DHT11 temperature/humidity sensor.
 # If setting this to 0, data will be simulated.
-TEMP_SENSOR = 0
+TEMP_SENSOR = 1
 
 
 class Display:
@@ -87,15 +88,17 @@ class SafeHelmet:
         self._connections = set()
         self._service_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479")
         self._temp_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d480")
-        self._press_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d481")
-        self._state_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d482")
+        self._hum_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d481")
+        self._lux_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d482")
+        self._state_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d483")
 
         self._temp_char = (self._temp_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
-        self._press_char = (self._press_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
+        self._hum_char = (self._hum_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
+        self._lux_char = (self._lux_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
         self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
-        self._service = (self._service_uuid, (self._temp_char, self._press_char, self._state_char))
+        self._service = (self._service_uuid, (self._temp_char, self._hum_char, self._lux_char, self._state_char))
 
-        ((self._temp_handle, self._press_handle, self._state_handle),) = self.ble.gatts_register_services(
+        ((self._temp_handle, self._hum_handle, self._lux_handle, self._state_handle),) = self.ble.gatts_register_services(
             [self._service])
 
         self.standby = False
@@ -104,11 +107,12 @@ class SafeHelmet:
         self.adv_led.value(0)
 
         if TEMP_SENSOR:
-            self.temp_sensor = bme280.BME280(i2c=self.i2c)
+            self.dht_sensor = dht.DHT11(Pin(18))
         else:
-            print("BME280 is disabled by current configuration. Data will be simulated")
+            print("DHT11 sensor is disabled by current configuration. Data will be simulated")
 
         self.display = Display(self.i2c)
+        self.light_sensor = BH1750(self.i2c)
 
         self.data_interval = data_interval
         self.base_interval = 10  # 10ms precision on virtual timers
@@ -183,23 +187,29 @@ class SafeHelmet:
             return
 
         self.collect_led.value(1)
+
+        lux = self.light_sensor.luminance()
+
         if TEMP_SENSOR:
-            temperature, pressure, _ = self.temp_sensor.read_compensated_data()
+            self.dht_sensor.measure()
+            temperature = self.dht_sensor.temperature()
+            humidity = self.dht_sensor.humidity()
         else:
-            pressure = random.uniform(1000, 1050)
+            humidity = random.uniform(10, 98)
             temperature = random.uniform(20.0, 22.0)
 
-        pressure = pressure / 100
-
-        print("Temperature: {:.1f} / Pressure: {:.1f}".format(temperature, pressure))
+        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f}".format(temperature, humidity, lux))
 
         for conn_handle in self._connections:
             self.ble.gatts_notify(conn_handle, self._temp_handle, "{:.1f}".format(temperature).encode())
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._press_handle, "{:.1f}".format(pressure).encode())
+            self.ble.gatts_notify(conn_handle, self._hum_handle, "{:.1f}".format(humidity).encode())
+        for conn_handle in self._connections:
+            self.ble.gatts_notify(conn_handle, self._lux_handle, "{:.1f}".format(lux).encode())
 
-        self.display.write_text("Temp: {:.1f}C".format(temperature))
-        self.display.write_text("Press: {:.1f} hPa".format(pressure), clear=False, y=32)
+        self.display.write_text("Temp.: {:.1f}C".format(temperature))
+        self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
+        self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
 
         self.collect_led.value(0)
 
@@ -221,16 +231,14 @@ class SafeHelmet:
 
     def _check_exit_standby(self):
         if TEMP_SENSOR:
-            temperature, pressure, _ = self.temp_sensor.read_compensated_data()
+            temperature = self.dht_sensor.temperature()
         else:
-            pressure = random.uniform(1000, 1050)
             temperature = random.uniform(20.0, 22.0)
 
         if temperature <= 23:
             print("Exiting standby mode...")
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._state_handle, b"Exiting standby")
-
 
             self.standby = False
             self.standby_led.value(0)
