@@ -23,7 +23,7 @@ while True:
         lux = light_sensor.luminance()
 
         # Lettura dal MPU6050 (giroscopio: X, Y, Z)
-        gyro = mpu.read_angle()
+        gyro = mpu.read_accel_data()
 
         gyro_x, gyro_y, gyro_z = gyro['x'], gyro['y'], gyro['z']
 

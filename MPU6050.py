@@ -4,7 +4,7 @@
 # and https://github.com/CoreElectronics/CE-PiicoDev-MPU6050-MicroPython-Module
 
 from math import sqrt, atan2
-from machine import Pin, SoftI2C
+from machine import Pin, I2C
 from time import sleep_ms
 
 error_msg = "\nError \n"
@@ -62,7 +62,7 @@ def signedIntFromBytes(x, endian="big"):
 
 
 class MPU6050(object):
-    def __init__(self, bus=None, freq=None, sda=None, scl=None, addr=_MPU6050_ADDRESS):
+    def __init__(self, i2c: I2C, bus=None, freq=None, sda=None, scl=None, addr=_MPU6050_ADDRESS):
         # Checks any erorr would happen with I2C communication protocol.
         self._failCount = 0
         self._terminatingFailCount = 0
@@ -71,7 +71,7 @@ class MPU6050(object):
         # Pin assignment:
         # SCL -> GPIO 22
         # SDA -> GPIO 21
-        self.i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=100000)
+        self.i2c = i2c
 
         # Initializing the I2C method for ESP8266
         # Pin assignment:

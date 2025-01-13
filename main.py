@@ -14,7 +14,7 @@ TELE-ESP-BOARD LEDS:
 '''
 
 # Set this to enable/disable ssd1306 display functionality
-DISPLAY = 1
+DISPLAY = 0
 
 # Set this to enable/disable DHT11 temperature/humidity sensor.
 # If setting this to 0, data will be simulated.
@@ -113,6 +113,7 @@ class SafeHelmet:
 
         self.display = Display(self.i2c)
         self.light_sensor = BH1750(self.i2c)
+        self.mpu = MPU6050(self.i2c)
 
         self.data_interval = data_interval
         self.base_interval = 10  # 10ms precision on virtual timers
@@ -189,6 +190,7 @@ class SafeHelmet:
         self.collect_led.value(1)
 
         lux = self.light_sensor.luminance()
+        z_accel = self.mpu.read_accel_data()['z']
 
         if TEMP_SENSOR:
             self.dht_sensor.measure()
@@ -198,7 +200,7 @@ class SafeHelmet:
             humidity = random.uniform(10, 98)
             temperature = random.uniform(20.0, 22.0)
 
-        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f}".format(temperature, humidity, lux))
+        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Accel (Z): {:.1f}".format(temperature, humidity, lux, z_accel))
 
         for conn_handle in self._connections:
             self.ble.gatts_notify(conn_handle, self._temp_handle, "{:.1f}".format(temperature).encode())
@@ -213,7 +215,7 @@ class SafeHelmet:
 
         self.collect_led.value(0)
 
-        if temperature > 23:
+        if z_accel < -2:
             self._enter_standby()
 
     def _enter_standby(self):
@@ -230,12 +232,9 @@ class SafeHelmet:
             self.standby_led.value(not self.standby_led.value())
 
     def _check_exit_standby(self):
-        if TEMP_SENSOR:
-            temperature = self.dht_sensor.temperature()
-        else:
-            temperature = random.uniform(20.0, 22.0)
+        z_accel = self.mpu.read_accel_data()['z']
 
-        if temperature <= 23:
+        if z_accel >= 5:
             print("Exiting standby mode...")
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._state_handle, b"Exiting standby")
