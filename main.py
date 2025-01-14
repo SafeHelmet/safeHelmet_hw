@@ -1,5 +1,3 @@
-import random
-
 import ubluetooth
 from machine import Timer, Pin, I2C
 import ssd1306
@@ -77,8 +75,8 @@ class SafeHelmet:
         self.standby_led = Pin(2, Pin.OUT)
         self.standby_led.value(0)
 
-        self.collect_led = Pin(4, Pin.OUT)
-        self.collect_led.value(0)
+        self.send_led = Pin(4, Pin.OUT)
+        self.send_led.value(0)
 
         self.adv_led = Pin(25, Pin.OUT)
         self.adv_led.value(0)
@@ -121,16 +119,15 @@ class SafeHelmet:
 
         # Physical and virtual timers init
         self.data_interval = data_interval
-        self.base_interval = 10  # 10ms precision on virtual timers
+        self.base_interval = 60  # 100ms precision on virtual timers
 
         self.virtual_timers = []
         self.adv_led_timer_id = None  # store the id of the adv led timer
-        self.standby_led_timer_id = None  # store the id of the standby led timer
         self.data_timer_id = None  # store the id of the data timer
+
 
         self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
         self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
-        self.standby_led_timer_id = self.create_virtual_timer(1000, self._standby_mode)
 
         self.base_timer = Timer(-1)
         self.base_timer.init(period=self.base_interval, mode=Timer.PERIODIC, callback=self._virtual_timer_callback)
@@ -143,6 +140,7 @@ class SafeHelmet:
             vt["counter"] += self.base_interval
             if vt["counter"] >= vt["period"]:
                 vt["callback"]()
+                print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
                 vt["counter"] = 0
 
     def create_virtual_timer(self, period, callback):
@@ -162,6 +160,7 @@ class SafeHelmet:
         else:
             self.virtual_timers.pop(to_remove)  # remove the timer from the list
 
+    # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
         if event == 1:
             conn_handle, _, _ = data
@@ -172,6 +171,7 @@ class SafeHelmet:
             self.adv_led.value(0)  # turn off the LED
 
             self._start_data_collection()
+
         elif event == 2:
             conn_handle, _, _ = data
             self._connections.remove(conn_handle)
@@ -212,7 +212,7 @@ class SafeHelmet:
         self._lux[0] += self.light_sensor.luminance()
         self._lux[1] += 1
 
-    def _read_orientation(self) -> float:
+    def _get_orientation(self) -> float:
         return self.mpu.read_accel_data()['z']
 
     def _detect_crash(self):
@@ -223,14 +223,16 @@ class SafeHelmet:
     At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
     between one send and another.'''
     def _start_data_collection(self):
-        self._temp_timer = self.create_virtual_timer(10.000, self._read_temperature)
-        self._hum_timer = self.create_virtual_timer(30.000, self._read_humidity)
-        self._lux_timer = self.create_virtual_timer(2.000, self._read_lux)
-        self._accel_timer = self.create_virtual_timer(1.000, self._read_orientation)
+        self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
+        self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
+        self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
+        self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
+
 
     '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
     for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
     def _stop_data_collection(self, accel=False):
+        print("data collection stopped")
         if accel:
             self.stop_virtual_timer(self._accel_timer)
         self.stop_virtual_timer(self._temp_timer)
@@ -250,11 +252,14 @@ class SafeHelmet:
         if not self._connections:
             return
 
+        self.send_led.value(1)
+
         calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
 
         temperature = calculate_mean(self._temperature)
         humidity = calculate_mean(self._humidity)
         lux = calculate_mean(self._lux)
+
 
         print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f}".format(temperature, humidity, lux))
 
@@ -269,38 +274,12 @@ class SafeHelmet:
         self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
         self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
 
-        self.collect_led.value(0)
+        self.send_led.value(0)
 
-        if z_accel < -2:
-            self._enter_standby()
-
-    def _enter_standby(self):
-        print("Entering standby mode...")
-        for conn_handle in self._connections:
-            self.ble.gatts_indicate(conn_handle, self._state_handle, b"Entering standby")
-
-            self.standby = True
-
-            self.display.write_text("Standby")
-
-    def _standby_mode(self):
-        if self.standby:
-            self.standby_led.value(not self.standby_led.value())
-
-    def _check_exit_standby(self):
-        z_accel = self.mpu.read_accel_data()['z']
-
-        if z_accel >= 5:
-            print("Exiting standby mode...")
-            for conn_handle in self._connections:
-                self.ble.gatts_indicate(conn_handle, self._state_handle, b"Exiting standby")
-
-            self.standby = False
-            self.standby_led.value(0)
-
+        self._clean_collected_data()
 
 # Esegui il server BLE per sensori
-ble_sensor = SafeHelmet(data_interval=5)
+ble_sensor = SafeHelmet(data_interval=10)
 
 try:
     while True:
