@@ -6,6 +6,7 @@ import ssd1306
 from MPU6050 import MPU6050
 from bh1750 import BH1750
 import dht
+
 '''
 TELE-ESP-BOARD LEDS:
     R: D25
@@ -15,10 +16,6 @@ TELE-ESP-BOARD LEDS:
 
 # Set this to enable/disable ssd1306 display functionality
 DISPLAY = 0
-
-# Set this to enable/disable DHT11 temperature/humidity sensor.
-# If setting this to 0, data will be simulated.
-TEMP_SENSOR = 1
 
 
 class Display:
@@ -40,7 +37,6 @@ class Display:
                     self.oled.text(line, x, y + i * 10)  # Adjust y-offset for each line
                 self.oled.show()
                 self.last_status = [text, x, y, clear]
-
 
     def _wrap_text(self, text):
         """Wraps text to fit within 14 characters per line (more efficiently)."""
@@ -77,11 +73,15 @@ class SafeHelmet:
         # I2C init
         self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
+        # Sample LED init
         self.standby_led = Pin(2, Pin.OUT)
         self.standby_led.value(0)
 
         self.collect_led = Pin(4, Pin.OUT)
         self.collect_led.value(0)
+
+        self.adv_led = Pin(25, Pin.OUT)
+        self.adv_led.value(0)
 
         # BLE init and service/characteristics setup
         self.ble = ubluetooth.BLE()
@@ -101,23 +101,25 @@ class SafeHelmet:
         self._state_char = (self._state_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
         self._service = (self._service_uuid, (self._temp_char, self._hum_char, self._lux_char, self._state_char))
 
-        ((self._temp_handle, self._hum_handle, self._lux_handle, self._state_handle),) = self.ble.gatts_register_services(
+        ((self._temp_handle, self._hum_handle, self._lux_handle,
+          self._state_handle),) = self.ble.gatts_register_services(
             [self._service])
 
+        # Sensors setup and init
         self.standby = False
 
-        self.adv_led = Pin(25, Pin.OUT)
-        self.adv_led.value(0)
-
-        if TEMP_SENSOR:
-            self.dht_sensor = dht.DHT11(Pin(18))
-        else:
-            print("DHT11 sensor is disabled by current configuration. Data will be simulated")
-
+        self.dht_sensor = dht.DHT11(Pin(18))
         self.display = Display(self.i2c)
         self.light_sensor = BH1750(self.i2c)
         self.mpu = MPU6050(self.i2c)
 
+        # First value is total sum of readings, second value is number of readings
+        self._temperature = [0, 0]
+        self._humidity = [0, 0]
+        self._lux = [0, 0]
+
+
+        # Physical and virtual timers init
         self.data_interval = data_interval
         self.base_interval = 10  # 10ms precision on virtual timers
 
@@ -126,13 +128,14 @@ class SafeHelmet:
         self.standby_led_timer_id = None  # store the id of the standby led timer
         self.data_timer_id = None  # store the id of the data timer
 
-        self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._collect_and_send_data)
+        self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
         self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
         self.standby_led_timer_id = self.create_virtual_timer(1000, self._standby_mode)
 
         self.base_timer = Timer(-1)
         self.base_timer.init(period=self.base_interval, mode=Timer.PERIODIC, callback=self._virtual_timer_callback)
 
+        # Start advertising process after startup
         self._start_advertising()
 
     def _virtual_timer_callback(self, timer):
@@ -148,11 +151,16 @@ class SafeHelmet:
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
+        to_remove = None
         for i, vt in enumerate(self.virtual_timers):
             if vt["id"] == timer_id:
-                self.virtual_timers.pop(i)  # remove the timer from the list
-                return  # exit from the function
-        print("Timer id not found")  # if the id is not found print a message
+                to_remove = i
+                break
+        if to_remove is None:
+            print("Timer id not found")  # if the id is not found print a message
+            return
+        else:
+            self.virtual_timers.pop(to_remove)  # remove the timer from the list
 
     def _irq(self, event, data):
         if event == 1:
@@ -162,12 +170,15 @@ class SafeHelmet:
             self._stop_advertising()
             self.stop_virtual_timer(self.adv_led_timer_id)  # stop adv LED
             self.adv_led.value(0)  # turn off the LED
+
+            self._start_data_collection()
         elif event == 2:
             conn_handle, _, _ = data
             self._connections.remove(conn_handle)
             print("Device disconnected")
             self._start_advertising()
             self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  #restart the timer
+            self._stop_data_collection()
         elif event == 3:
             print("Writing is not supported on this characteristic")
 
@@ -186,28 +197,66 @@ class SafeHelmet:
     def _toggle_adv_led(self):
         self.adv_led.value(not self.adv_led.value())
 
-    def _collect_and_send_data(self):
-        if self.standby:
-            self._check_exit_standby()
-            return
+    #### DATA COLLECTING METHODS ####
+    def _read_temperature(self):
+        self.dht_sensor.measure()
+        self._temperature[0] += self.dht_sensor.temperature()
+        self._temperature[1] += 1
 
+    def _read_humidity(self):
+        self.dht_sensor.measure()
+        self._humidity[0] += self.dht_sensor.humidity()
+        self._humidity[1] += 1
+
+    def _read_lux(self):
+        self._lux[0] += self.light_sensor.luminance()
+        self._lux[1] += 1
+
+    def _read_orientation(self) -> float:
+        return self.mpu.read_accel_data()['z']
+
+    def _detect_crash(self):
+        pass
+
+    '''Start collecting data from all sensors and calculating mean averages. Each sensor has a different priority in
+    worker's safety, thus the need for such a method that allows to set different retrieval intervals. 
+    At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
+    between one send and another.'''
+    def _start_data_collection(self):
+        self._temp_timer = self.create_virtual_timer(10.000, self._read_temperature)
+        self._hum_timer = self.create_virtual_timer(30.000, self._read_humidity)
+        self._lux_timer = self.create_virtual_timer(2.000, self._read_lux)
+        self._accel_timer = self.create_virtual_timer(1.000, self._read_orientation)
+
+    '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
+    for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
+    def _stop_data_collection(self, accel=False):
+        if accel:
+            self.stop_virtual_timer(self._accel_timer)
+        self.stop_virtual_timer(self._temp_timer)
+        self.stop_virtual_timer(self._hum_timer)
+        self.stop_virtual_timer(self._lux_timer)
+        self._clean_collected_data()
+
+    def _clean_collected_data(self):
+        self._temperature[0] = 0
+        self._temperature[1] = 0
+        self._humidity[0] = 0
+        self._humidity[1] = 0
+        self._lux[0] = 0
+        self._lux[1] = 0
+
+    def _send_data(self):
         if not self._connections:
             return
 
-        self.collect_led.value(1)
+        calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
 
-        lux = self.light_sensor.luminance()
-        z_accel = self.mpu.read_accel_data()['z']
+        temperature = calculate_mean(self._temperature)
+        humidity = calculate_mean(self._humidity)
+        lux = calculate_mean(self._lux)
 
-        if TEMP_SENSOR:
-            self.dht_sensor.measure()
-            temperature = self.dht_sensor.temperature()
-            humidity = self.dht_sensor.humidity()
-        else:
-            humidity = random.uniform(10, 98)
-            temperature = random.uniform(20.0, 22.0)
-
-        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Accel (Z): {:.1f}".format(temperature, humidity, lux, z_accel))
+        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f}".format(temperature, humidity, lux))
 
         for conn_handle in self._connections:
             self.ble.gatts_indicate(conn_handle, self._temp_handle, "{:.1f}".format(temperature).encode())
