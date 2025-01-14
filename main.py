@@ -73,17 +73,20 @@ class Display:
 
 class SafeHelmet:
     def __init__(self, data_interval=5):
-        self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
-        self.ble = ubluetooth.BLE()
-        self.ble.active(True)
-        self.ble.irq(self._irq)
+        # I2C init
+        self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
         self.standby_led = Pin(2, Pin.OUT)
         self.standby_led.value(0)
 
         self.collect_led = Pin(4, Pin.OUT)
         self.collect_led.value(0)
+
+        # BLE init and service/characteristics setup
+        self.ble = ubluetooth.BLE()
+        self.ble.active(True)
+        self.ble.irq(self._irq)
 
         self._connections = set()
         self._service_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479")
@@ -92,10 +95,10 @@ class SafeHelmet:
         self._lux_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d482")
         self._state_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d483")
 
-        self._temp_char = (self._temp_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
-        self._hum_char = (self._hum_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
-        self._lux_char = (self._lux_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
-        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY | ubluetooth.FLAG_READ)
+        self._temp_char = (self._temp_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
+        self._hum_char = (self._hum_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
+        self._lux_char = (self._lux_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
+        self._state_char = (self._state_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
         self._service = (self._service_uuid, (self._temp_char, self._hum_char, self._lux_char, self._state_char))
 
         ((self._temp_handle, self._hum_handle, self._lux_handle, self._state_handle),) = self.ble.gatts_register_services(
@@ -156,6 +159,7 @@ class SafeHelmet:
             conn_handle, _, _ = data
             self._connections.add(conn_handle)
             print("Device connected: {}".format(conn_handle))
+            self._stop_advertising()
             self.stop_virtual_timer(self.adv_led_timer_id)  # stop adv LED
             self.adv_led.value(0)  # turn off the LED
         elif event == 2:
@@ -175,6 +179,9 @@ class SafeHelmet:
                                bytes([len(name) + 1]) + b'\x09' + name)
         print("SafeHelmet is advertising...")
         self.display.write_text('Waiting for connection...')
+
+    def _stop_advertising(self):
+        self.ble.gap_advertise(interval_us=None)
 
     def _toggle_adv_led(self):
         self.adv_led.value(not self.adv_led.value())
@@ -203,11 +210,11 @@ class SafeHelmet:
         print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Accel (Z): {:.1f}".format(temperature, humidity, lux, z_accel))
 
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._temp_handle, "{:.1f}".format(temperature).encode())
+            self.ble.gatts_indicate(conn_handle, self._temp_handle, "{:.1f}".format(temperature).encode())
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._hum_handle, "{:.1f}".format(humidity).encode())
+            self.ble.gatts_indicate(conn_handle, self._hum_handle, "{:.1f}".format(humidity).encode())
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._lux_handle, "{:.1f}".format(lux).encode())
+            self.ble.gatts_indicate(conn_handle, self._lux_handle, "{:.1f}".format(lux).encode())
 
         self.display.write_text("Temp.: {:.1f}C".format(temperature))
         self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
@@ -221,7 +228,7 @@ class SafeHelmet:
     def _enter_standby(self):
         print("Entering standby mode...")
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._state_handle, b"Entering standby")
+            self.ble.gatts_indicate(conn_handle, self._state_handle, b"Entering standby")
 
             self.standby = True
 
@@ -237,7 +244,7 @@ class SafeHelmet:
         if z_accel >= 5:
             print("Exiting standby mode...")
             for conn_handle in self._connections:
-                self.ble.gatts_notify(conn_handle, self._state_handle, b"Exiting standby")
+                self.ble.gatts_indicate(conn_handle, self._state_handle, b"Exiting standby")
 
             self.standby = False
             self.standby_led.value(0)
