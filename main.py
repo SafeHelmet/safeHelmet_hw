@@ -1,3 +1,5 @@
+import struct
+
 import ubluetooth
 from machine import Timer, Pin, I2C
 import ssd1306
@@ -88,19 +90,14 @@ class SafeHelmet:
 
         self._connections = set()
         self._service_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479")
-        self._temp_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d480")
-        self._hum_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d481")
-        self._lux_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d482")
-        self._state_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d483")
+        self._data_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d480")
+        self._state_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d481")
 
-        self._temp_char = (self._temp_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
-        self._hum_char = (self._hum_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
-        self._lux_char = (self._lux_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
-        self._state_char = (self._state_uuid, ubluetooth.FLAG_INDICATE | ubluetooth.FLAG_READ)
-        self._service = (self._service_uuid, (self._temp_char, self._hum_char, self._lux_char, self._state_char))
+        self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY)
+        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY)
+        self._service = (self._service_uuid, (self._data_char, self._state_char))
 
-        ((self._temp_handle, self._hum_handle, self._lux_handle,
-          self._state_handle),) = self.ble.gatts_register_services(
+        ((self._data_handle, self._state_handle),) = self.ble.gatts_register_services(
             [self._service])
 
         # Sensors setup and init
@@ -116,7 +113,6 @@ class SafeHelmet:
         self._humidity = [0, 0]
         self._lux = [0, 0]
 
-
         # Physical and virtual timers init
         self.data_interval = data_interval
         self.base_interval = 60  # 100ms precision on virtual timers
@@ -124,7 +120,6 @@ class SafeHelmet:
         self.virtual_timers = []
         self.adv_led_timer_id = None  # store the id of the adv led timer
         self.data_timer_id = None  # store the id of the data timer
-
 
         self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
         self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
@@ -140,7 +135,7 @@ class SafeHelmet:
             vt["counter"] += self.base_interval
             if vt["counter"] >= vt["period"]:
                 vt["callback"]()
-                print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
+                #print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
                 vt["counter"] = 0
 
     def create_virtual_timer(self, period, callback):
@@ -222,15 +217,16 @@ class SafeHelmet:
     worker's safety, thus the need for such a method that allows to set different retrieval intervals. 
     At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
     between one send and another.'''
+
     def _start_data_collection(self):
         self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
         self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
         self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
 
-
     '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
     for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
+
     def _stop_data_collection(self, accel=False):
         print("data collection stopped")
         if accel:
@@ -259,16 +255,19 @@ class SafeHelmet:
         temperature = calculate_mean(self._temperature)
         humidity = calculate_mean(self._humidity)
         lux = calculate_mean(self._lux)
+        crash_detection = 0
+        sensor_states = 0b101
+        anomaly_mask = 0b00000000
 
+        payload = struct.pack("ffffBB", temperature, humidity, lux, crash_detection, sensor_states, anomaly_mask)
+        print(payload)
 
         print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f}".format(temperature, humidity, lux))
 
         for conn_handle in self._connections:
-            self.ble.gatts_indicate(conn_handle, self._temp_handle, "{:.1f}".format(temperature).encode())
-        for conn_handle in self._connections:
-            self.ble.gatts_indicate(conn_handle, self._hum_handle, "{:.1f}".format(humidity).encode())
-        for conn_handle in self._connections:
-            self.ble.gatts_indicate(conn_handle, self._lux_handle, "{:.1f}".format(lux).encode())
+            self.ble.gatts_notify(conn_handle, self._data_handle, payload)
+        '''for conn_handle in self._connections:
+            self.ble.gatts_notify(conn_handle, self._state_handle, self.standby)'''
 
         self.display.write_text("Temp.: {:.1f}C".format(temperature))
         self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
@@ -277,6 +276,7 @@ class SafeHelmet:
         self.send_led.value(0)
 
         self._clean_collected_data()
+
 
 # Esegui il server BLE per sensori
 ble_sensor = SafeHelmet(data_interval=10)
