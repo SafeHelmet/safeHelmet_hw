@@ -1,7 +1,9 @@
 import struct
 
 import ubluetooth
+import ubinascii
 from machine import Timer, Pin, I2C
+import machine
 import ssd1306
 from MPU6050 import MPU6050
 from bh1750 import BH1750
@@ -69,7 +71,7 @@ class Display:
 
 class SafeHelmet:
     def __init__(self, data_interval=5):
-
+        print("Initializing SafeHelmet...")
         # I2C init
         self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
@@ -89,16 +91,27 @@ class SafeHelmet:
         self.ble.irq(self._irq)
 
         self._connections = set()
-        self._service_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479")
-        self._data_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d480")
-        self._state_uuid = ubluetooth.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d481")
 
-        self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY)
-        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY)
-        self._service = (self._service_uuid, (self._data_char, self._state_char))
+        # Generate unique UUIDs for this device
+        uuids = self.generate_uuids()
+        print("This device has UUIDs:")
+        for key, uuid in uuids.items():
+            print("{}: {}".format(key, uuid))
+        print("\n")
 
-        ((self._data_handle, self._state_handle),) = self.ble.gatts_register_services(
-            [self._service])
+        # Convert string UUIDs to ubluetooth.UUID objects
+        self._service_uuid = ubluetooth.UUID(uuids['service'])
+        self._data_uuid = ubluetooth.UUID(uuids['data'])
+        self._state_uuid = ubluetooth.UUID(uuids['state'])
+
+        self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
+        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
+        self._service = (self._service_uuid, [self._data_char, self._state_char])
+
+        # Fix: Correct unpacking of service handles
+        [handles] = self.ble.gatts_register_services([self._service])
+        self._data_handle = handles[0]
+        self._state_handle = handles[1]
 
         # Sensors setup and init
         self.standby = False
@@ -127,8 +140,30 @@ class SafeHelmet:
         self.base_timer = Timer(-1)
         self.base_timer.init(period=self.base_interval, mode=Timer.PERIODIC, callback=self._virtual_timer_callback)
 
+        print("SafeHelmet is ready.")
+
         # Start advertising process after startup
         self._start_advertising()
+
+    def generate_uuids(self):
+        # Get unique ID from the microcontroller
+        unique_id = ubinascii.hexlify(machine.unique_id()).decode('utf-8')
+
+        # Pad unique_id if necessary to ensure we have enough characters
+        while len(unique_id) < 32:  # We need at least 32 chars
+            unique_id = unique_id + unique_id
+
+        def create_uuid(prefix):
+            # Format: xxxxxxxx-58cc-4372-a567-xxxxxxxxxxxx
+            # We use different parts of unique_id for each UUID, prefixed to ensure uniqueness
+            uuid_base = prefix + unique_id[:24]  # Use prefix and part of unique_id
+            return (f"{uuid_base[:8]}-58cc-4372-a567-{uuid_base[8:20]}")
+
+        return {
+            'service': create_uuid('1'),  # Service UUID
+            'data': create_uuid('2'),  # Data characteristic UUID
+            'state': create_uuid('3')  # State characteristic UUID
+        }
 
     def _virtual_timer_callback(self, timer):
         for vt in self.virtual_timers:
