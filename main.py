@@ -63,7 +63,7 @@ class Display:
                 start = rfind_index + 1
                 continue
 
-            #force split
+            # force split
             lines.append(text[start:end].strip())
             start = end
         return lines
@@ -71,7 +71,7 @@ class Display:
 
 class SafeHelmet:
     def __init__(self, data_interval=5):
-        print("Initializing SafeHelmet...")
+        print("\nInitializing SafeHelmet...")
         # I2C init
         self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
@@ -94,7 +94,7 @@ class SafeHelmet:
 
         # Generate unique UUIDs for this device
         uuids = self.generate_uuids()
-        print("This device has UUIDs:")
+        print("\nThis device has UUIDs:")
         for key, uuid in uuids.items():
             print("{}: {}".format(key, uuid))
         print("\n")
@@ -105,7 +105,8 @@ class SafeHelmet:
         self._state_uuid = ubluetooth.UUID(uuids['state'])
 
         self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
-        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
+        self._state_char = (
+        self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
         self._service = (self._service_uuid, [self._data_char, self._state_char])
 
         # Fix: Correct unpacking of service handles
@@ -131,6 +132,7 @@ class SafeHelmet:
         self.base_interval = 60  # 100ms precision on virtual timers
 
         self.virtual_timers = []
+        self.oneshot_timer_removal_list = []
         self.adv_led_timer_id = None  # store the id of the adv led timer
         self.data_timer_id = None  # store the id of the data timer
 
@@ -140,7 +142,7 @@ class SafeHelmet:
         self.base_timer = Timer(-1)
         self.base_timer.init(period=self.base_interval, mode=Timer.PERIODIC, callback=self._virtual_timer_callback)
 
-        print("SafeHelmet is ready.")
+        print("Device is ready.")
 
         # Start advertising process after startup
         self._start_advertising()
@@ -170,12 +172,20 @@ class SafeHelmet:
             vt["counter"] += self.base_interval
             if vt["counter"] >= vt["period"]:
                 vt["callback"]()
-                #print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
-                vt["counter"] = 0
+                # print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
+                if vt["one_shot"]:
+                    self.oneshot_timer_removal_list.append(vt)
+                else:
+                    vt["counter"] = 0
 
-    def create_virtual_timer(self, period, callback):
+        for vt in self.oneshot_timer_removal_list:
+            self.virtual_timers.remove(vt)
+        self.oneshot_timer_removal_list.clear()
+
+    def create_virtual_timer(self, period, callback, one_shot=False):
         timer_id = len(self.virtual_timers)  # assign an id equal to the index in the list
-        self.virtual_timers.append({"id": timer_id, "period": period, "callback": callback, "counter": 0})
+        self.virtual_timers.append(
+            {"id": timer_id, "period": period, "callback": callback, "counter": 0, "one_shot": one_shot})
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
@@ -189,6 +199,9 @@ class SafeHelmet:
             return
         else:
             self.virtual_timers.pop(to_remove)  # remove the timer from the list
+
+    def test_vt(self):
+        print("Testing VT")
 
     # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
@@ -207,7 +220,7 @@ class SafeHelmet:
             self._connections.remove(conn_handle)
             print("Device disconnected")
             self._start_advertising()
-            self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  #restart the timer
+            self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  # restart the timer
             self._stop_data_collection()
         elif event == 3:
             print("Writing is not supported on this characteristic")
@@ -322,3 +335,4 @@ try:
 except KeyboardInterrupt:
     ble_sensor.base_timer.deinit()
     print("Manually stopped")
+
