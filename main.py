@@ -1,3 +1,4 @@
+import random
 import struct
 
 import ubluetooth
@@ -17,8 +18,12 @@ TELE-ESP-BOARD LEDS:
 '''
 
 # Set this to enable/disable ssd1306 display functionality
-DISPLAY = 0
+DISPLAY = 1
 
+TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
+HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
+LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
+CRASH_THRESHOLD = 3.0  # Crash detection > 3 g
 
 class Display:
     def __init__(self, i2c_obj):
@@ -299,30 +304,54 @@ class SafeHelmet:
         self.send_led.value(1)
 
         calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
-
         temperature = calculate_mean(self._temperature)
         humidity = calculate_mean(self._humidity)
         lux = calculate_mean(self._lux)
-        crash_detection = 0
-        sensor_states = 0b101
+        crash_detection = 0  # Puoi aggiornare con valori reali se disponibili
+
+        # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
+        sensor_states = 0
+        for i in range(3):  # Tre sensori
+            if random.random() < 0.1:  # 10% di probabilità
+                sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
+
+        # Maschera di anomalie (per ora impostata a zero)
         anomaly_mask = 0b00000000
 
+        if temperature > TEMP_THRESHOLD:
+            anomaly_mask |= 0b00010000  # Anomalia temperatura
+        if humidity > HUMIDITY_THRESHOLD:
+            anomaly_mask |= 0b00001000  # Anomalia umidità
+        if lux > LUX_THRESHOLD:
+            anomaly_mask |= 0b00000100  # Anomalia luminosità
+        if crash_detection > CRASH_THRESHOLD:
+            anomaly_mask |= 0b00000010  # Anomalia crash detection
+        if sensor_states != 0:
+            anomaly_mask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
+
+        print(anomaly_mask)
+
+        # Crea il payload
         payload = struct.pack("ffffBB", temperature, humidity, lux, crash_detection, sensor_states, anomaly_mask)
         print(payload)
 
-        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f}".format(temperature, humidity, lux))
+        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b}".format(
+            temperature, humidity, lux, crash_detection, sensor_states))
 
+        # Invia il payload ai dispositivi connessi
         for conn_handle in self._connections:
             self.ble.gatts_notify(conn_handle, self._data_handle, payload)
-        '''for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._state_handle, self.standby)'''
 
+        # Aggiorna il display
         self.display.write_text("Temp.: {:.1f}C".format(temperature))
         self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
         self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
+        self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=48)
+        self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=64)
 
         self.send_led.value(0)
 
+        # Pulisce i dati raccolti
         self._clean_collected_data()
 
 
