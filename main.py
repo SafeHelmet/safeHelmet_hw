@@ -17,68 +17,16 @@ TELE-ESP-BOARD LEDS:
     G: ?? 
 '''
 
-# Set this to enable/disable ssd1306 display functionality
-DISPLAY = 1
 
 TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
 CRASH_THRESHOLD = 3.0  # Crash detection > 3 g
 
-class Display:
-    def __init__(self, i2c_obj):
-        if DISPLAY:
-            self.last_status = []
-            self.oled = ssd1306.SSD1306_I2C(128, 64, i2c_obj)  # Display OLED 128x64
-        else:
-            print("Adafruit SSD1306 is disabled by current configuration.")
-
-    def write_text(self, text, x=0, y=0, clear=True):
-        if DISPLAY:
-            if [text, x, y, clear] != self.last_status:
-                if clear:
-                    self.oled.fill(0)  # Pulisce lo schermo
-
-                lines = self._wrap_text(text) if len(text) > 14 else [text]
-                for i, line in enumerate(lines):
-                    self.oled.text(line, x, y + i * 10)  # Adjust y-offset for each line
-                self.oled.show()
-                self.last_status = [text, x, y, clear]
-
-    def _wrap_text(self, text):
-        """Wraps text to fit within 14 characters per line (more efficiently)."""
-        lines = []
-        start = 0
-        while start < len(text):
-            end = start + 14
-            if end >= len(text):
-                lines.append(text[start:].strip())
-                break
-
-            # Check for space to avoid cutting words
-            if text[end] == ' ':  # ideal case
-                lines.append(text[start:end].strip())
-                start = end + 1
-                continue
-
-            # Check for space before the limit
-            rfind_index = text.rfind(' ', start, end)
-            if rfind_index != -1:
-                lines.append(text[start:rfind_index].strip())
-                start = rfind_index + 1
-                continue
-
-            # force split
-            lines.append(text[start:end].strip())
-            start = end
-        return lines
-
 
 class SafeHelmet:
     def __init__(self, data_interval=5):
         print("\nInitializing SafeHelmet...")
-        # I2C init
-        self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
         # Sample LED init
         self.standby_led = Pin(2, Pin.OUT)
@@ -111,7 +59,7 @@ class SafeHelmet:
 
         self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
         self._state_char = (
-        self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
+            self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
         self._service = (self._service_uuid, [self._data_char, self._state_char])
 
         # Fix: Correct unpacking of service handles
@@ -121,11 +69,6 @@ class SafeHelmet:
 
         # Sensors setup and init
         self.standby = False
-
-        self.dht_sensor = dht.DHT11(Pin(18))
-        self.display = Display(self.i2c)
-        self.light_sensor = BH1750(self.i2c)
-        self.mpu = MPU6050(self.i2c)
 
         # First value is total sum of readings, second value is number of readings
         self._temperature = [0, 0]
@@ -146,6 +89,7 @@ class SafeHelmet:
 
         self.base_timer = Timer(-1)
         self.base_timer.init(period=self.base_interval, mode=Timer.PERIODIC, callback=self._virtual_timer_callback)
+
 
         print("Device is ready.")
 
@@ -205,9 +149,6 @@ class SafeHelmet:
         else:
             self.virtual_timers.pop(to_remove)  # remove the timer from the list
 
-    def test_vt(self):
-        print("Testing VT")
-
     # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
         if event == 1:
@@ -218,7 +159,6 @@ class SafeHelmet:
             self.stop_virtual_timer(self.adv_led_timer_id)  # stop adv LED
             self.adv_led.value(0)  # turn off the LED
 
-            self._start_data_collection()
 
         elif event == 2:
             conn_handle, _, _ = data
@@ -226,7 +166,7 @@ class SafeHelmet:
             print("Device disconnected")
             self._start_advertising()
             self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  # restart the timer
-            self._stop_data_collection()
+
         elif event == 3:
             print("Writing is not supported on this characteristic")
 
@@ -237,7 +177,6 @@ class SafeHelmet:
                                b'\x03\x03\xf4\x7a' +
                                bytes([len(name) + 1]) + b'\x09' + name)
         print("SafeHelmet is advertising...")
-        self.display.write_text('Waiting for connection...')
 
     def _stop_advertising(self):
         self.ble.gap_advertise(interval_us=None)
@@ -245,69 +184,17 @@ class SafeHelmet:
     def _toggle_adv_led(self):
         self.adv_led.value(not self.adv_led.value())
 
-    #### DATA COLLECTING METHODS ####
-    def _read_temperature(self):
-        self.dht_sensor.measure()
-        self._temperature[0] += self.dht_sensor.temperature()
-        self._temperature[1] += 1
-
-    def _read_humidity(self):
-        self.dht_sensor.measure()
-        self._humidity[0] += self.dht_sensor.humidity()
-        self._humidity[1] += 1
-
-    def _read_lux(self):
-        self._lux[0] += self.light_sensor.luminance()
-        self._lux[1] += 1
-
-    def _get_orientation(self) -> float:
-        return self.mpu.read_accel_data()['z']
-
-    def _detect_crash(self):
-        pass
-
-    '''Start collecting data from all sensors and calculating mean averages. Each sensor has a different priority in
-    worker's safety, thus the need for such a method that allows to set different retrieval intervals. 
-    At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
-    between one send and another.'''
-
-    def _start_data_collection(self):
-        self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
-        self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
-        self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
-
-    '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
-    for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
-
-    def _stop_data_collection(self, accel=False):
-        print("data collection stopped")
-        if accel:
-            self.stop_virtual_timer(self._accel_timer)
-        self.stop_virtual_timer(self._temp_timer)
-        self.stop_virtual_timer(self._hum_timer)
-        self.stop_virtual_timer(self._lux_timer)
-        self._clean_collected_data()
-
-    def _clean_collected_data(self):
-        self._temperature[0] = 0
-        self._temperature[1] = 0
-        self._humidity[0] = 0
-        self._humidity[1] = 0
-        self._lux[0] = 0
-        self._lux[1] = 0
-
     def _send_data(self):
         if not self._connections:
             return
 
         self.send_led.value(1)
 
-        calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
-        temperature = calculate_mean(self._temperature)
-        humidity = calculate_mean(self._humidity)
-        lux = calculate_mean(self._lux)
-        crash_detection = 0  # Puoi aggiornare con valori reali se disponibili
+        # Simula i dati casuali
+        temperature = round(random.uniform(20.0, 30.0), 1)  # Temperatura simulata (20-30 °C)
+        humidity = round(random.uniform(30.0, 70.0), 1)  # Umidità simulata (30-70 %)
+        lux = round(random.uniform(100.0, 1000.0), 1)  # Luminosità simulata (100-1000 lux)
+        crash_detection = round(random.uniform(0.0, 5.0), 2)  # Crash simulato (0-5 g)
 
         # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
         sensor_states = 0
@@ -342,17 +229,8 @@ class SafeHelmet:
         for conn_handle in self._connections:
             self.ble.gatts_notify(conn_handle, self._data_handle, payload)
 
-        # Aggiorna il display
-        self.display.write_text("Temp.: {:.1f}C".format(temperature))
-        self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
-        self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
-        self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=48)
-        self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=64)
-
         self.send_led.value(0)
 
-        # Pulisce i dati raccolti
-        self._clean_collected_data()
 
 
 # Esegui il server BLE per sensori
