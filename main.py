@@ -81,7 +81,6 @@ class Display:
 class SafeHelmet:
     def __init__(self, data_interval=5):
 
-
         print("\nInitializing SafeHelmet...")
         # I2C init
         self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
@@ -116,12 +115,12 @@ class SafeHelmet:
         self._state_uuid = ubluetooth.UUID(uuids['state'])
 
         self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
-        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
+        self._state_char = (
+        self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
         self._service = (self._service_uuid, (self._data_char, self._state_char))
 
         # Fix: Correct unpacking of service handles
         [handles] = self.ble.gatts_register_services([self._service])
-        print(handles)
         self._data_handle = handles[0]
         self._state_handle = handles[2]
 
@@ -200,11 +199,13 @@ class SafeHelmet:
 
     def create_virtual_timer(self, period, callback, one_shot=False):
         timer_id = len(self.virtual_timers)  # assign an id equal to the index in the list
+        print(timer_id)
         self.virtual_timers.append(
             {"id": timer_id, "period": period, "callback": callback, "counter": 0, "one_shot": one_shot})
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
+        print("deleting timer {}".format(timer_id))
         to_remove = None
         for i, vt in enumerate(self.virtual_timers):
             if vt["id"] == timer_id:
@@ -225,7 +226,12 @@ class SafeHelmet:
             self._stop_advertising()
             self.stop_virtual_timer(self.adv_led_timer_id)  # stop adv LED
             self.adv_led.value(0)  # turn off the LED
-
+            if self.standby:
+                self.stop_virtual_timer(self.standby_led_timer_id)
+                self.stop_virtual_timer(self.standby_check_timer_id)
+                self.standby = False
+            if self.data_timer_id is None:
+                self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
             self._start_data_collection()
 
         elif event == 2:
@@ -234,7 +240,12 @@ class SafeHelmet:
             print("Device disconnected")
             self._start_advertising()
             self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  # restart the timer
-            self._stop_data_collection(accel=True)
+            if not self.standby:
+                self._stop_data_collection()
+            else:
+                self.stop_virtual_timer(self.standby_led_timer_id)
+                self.stop_virtual_timer(self.standby_check_timer_id)
+                self.standby = False
 
         elif event == 3:
             print("Writing is not supported on this characteristic")
@@ -246,7 +257,7 @@ class SafeHelmet:
                                b'\x03\x03\xf4\x7a' +
                                bytes([len(name) + 1]) + b'\x09' + name)
         print("SafeHelmet is advertising...")
-        self.display.write_text('Waiting for connection...',y=20)
+        self.display.write_text('Waiting for connection...', y=20)
 
     def _stop_advertising(self):
         self.ble.gap_advertise(interval_us=None)
@@ -282,19 +293,19 @@ class SafeHelmet:
     worker's safety, thus the need for such a method that allows to set different retrieval intervals. 
     At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
     between one send and another.'''
+
     def _start_data_collection(self):
         self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
         self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
+        #self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
 
     '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
     for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
-    def _stop_data_collection(self, accel=False):
+
+    def _stop_data_collection(self):
         print("data collection stopped")
-        if accel:
-            self.stop_virtual_timer(self._accel_timer)
-        self.stop_virtual_timer(self._temp_timer)
+        self._temp_timer = self.stop_virtual_timer(self._temp_timer)
         self.stop_virtual_timer(self._hum_timer)
         self.stop_virtual_timer(self._lux_timer)
         self._clean_collected_data()
@@ -348,8 +359,6 @@ class SafeHelmet:
             if sensor_states != 0:
                 anomaly_bitmask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
 
-            print(anomaly_bitmask)
-
             # Crea il payload
             payload = struct.pack("ffffBB",
                                   temperature,
@@ -361,21 +370,20 @@ class SafeHelmet:
                                   wearables_bitmask
                                   )
 
-
-            print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
-                temperature, humidity, lux, crash_detection, sensor_states, wearables_bitmask))
+            print(
+                "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
+                    temperature, humidity, lux, crash_detection, sensor_states, wearables_bitmask))
 
             # Invia il payload ai dispositivi connessi
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._data_handle, payload)
-                
 
             # Aggiorna il display
             self.display.write_text("Temp.: {:.1f}C".format(temperature))
-            self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
-            self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
-            self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=48)
-            self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=64)
+            self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=10)
+            self.display.write_text("Lux.: {:.1f}".format(lux), clear=False, y=20)
+            self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=30)
+            self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=40)
 
             self.send_led.value(0)
 
@@ -387,23 +395,29 @@ class SafeHelmet:
 
     def _standby_mode(self):
         print("Entering standby mode")
+        self.standby = True
         for conn_handle in self._connections:
             self.ble.gatts_notify(conn_handle, self._state_handle, "Sleep: ON")
         self.stop_virtual_timer(self.data_timer_id)
+        self.data_timer_id = None
         self.standby_led_timer_id = self.create_virtual_timer(500, self._toggle_standby_led)
         self.standby_check_timer_id = self.create_virtual_timer(5000, self._check_standby_exit)
+        self.display.write_text("-Standby mode-")
 
     def _check_standby_exit(self):
         if self._get_orientation() > WAKEUP_TRESHOLD:
             self.stop_virtual_timer(self.standby_led_timer_id)
             self.stop_virtual_timer(self.standby_check_timer_id)
             self.standby_led.value(0)
+            self.standby = False
             print("Exiting standby mode")
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._state_handle, "Sleep: OFF")
 
             self._clean_collected_data()
             self._start_data_collection()
+            if self.data_timer_id is not None:
+                self.stop_virtual_timer(self.data_timer_id)
             self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
 
 
@@ -416,4 +430,3 @@ try:
 except KeyboardInterrupt:
     ble_sensor.base_timer.deinit()
     print("Manually stopped")
-
