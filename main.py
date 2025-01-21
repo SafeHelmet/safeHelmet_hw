@@ -25,6 +25,10 @@ HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
 CRASH_THRESHOLD = 3.0  # Crash detection > 3 g
 
+STANDBY_TRESHOLD = -2.0
+WAKEUP_TRESHOLD = 3.0
+
+
 class Display:
     def __init__(self, i2c_obj):
         if DISPLAY:
@@ -76,11 +80,13 @@ class Display:
 
 class SafeHelmet:
     def __init__(self, data_interval=5):
+
+
         print("\nInitializing SafeHelmet...")
         # I2C init
         self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
 
-        # Sample LED init
+        # LED init
         self.standby_led = Pin(2, Pin.OUT)
         self.standby_led.value(0)
 
@@ -110,14 +116,14 @@ class SafeHelmet:
         self._state_uuid = ubluetooth.UUID(uuids['state'])
 
         self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
-        self._state_char = (
-        self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
-        self._service = (self._service_uuid, [self._data_char, self._state_char])
+        self._state_char = (self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
+        self._service = (self._service_uuid, (self._data_char, self._state_char))
 
         # Fix: Correct unpacking of service handles
         [handles] = self.ble.gatts_register_services([self._service])
+        print(handles)
         self._data_handle = handles[0]
-        self._state_handle = handles[1]
+        self._state_handle = handles[2]
 
         # Sensors setup and init
         self.standby = False
@@ -126,6 +132,9 @@ class SafeHelmet:
         self.display = Display(self.i2c)
         self.light_sensor = BH1750(self.i2c)
         self.mpu = MPU6050(self.i2c)
+
+        self.welding_mask_gpio = Pin(13, Pin.IN, Pin.PULL_UP)
+        self.gas_mask_gpio = Pin(12, Pin.IN, Pin.PULL_UP)
 
         # First value is total sum of readings, second value is number of readings
         self._temperature = [0, 0]
@@ -140,6 +149,8 @@ class SafeHelmet:
         self.oneshot_timer_removal_list = []
         self.adv_led_timer_id = None  # store the id of the adv led timer
         self.data_timer_id = None  # store the id of the data timer
+        self.standby_check_timer_id = None
+        self.standby_led_timer_id = None
 
         self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
         self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
@@ -205,9 +216,6 @@ class SafeHelmet:
         else:
             self.virtual_timers.pop(to_remove)  # remove the timer from the list
 
-    def test_vt(self):
-        print("Testing VT")
-
     # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
         if event == 1:
@@ -226,7 +234,8 @@ class SafeHelmet:
             print("Device disconnected")
             self._start_advertising()
             self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  # restart the timer
-            self._stop_data_collection()
+            self._stop_data_collection(accel=True)
+
         elif event == 3:
             print("Writing is not supported on this characteristic")
 
@@ -237,13 +246,16 @@ class SafeHelmet:
                                b'\x03\x03\xf4\x7a' +
                                bytes([len(name) + 1]) + b'\x09' + name)
         print("SafeHelmet is advertising...")
-        self.display.write_text('Waiting for connection...')
+        self.display.write_text('Waiting for connection...',y=20)
 
     def _stop_advertising(self):
         self.ble.gap_advertise(interval_us=None)
 
     def _toggle_adv_led(self):
         self.adv_led.value(not self.adv_led.value())
+
+    def _toggle_standby_led(self):
+        self.standby_led.value(not self.standby_led.value())
 
     #### DATA COLLECTING METHODS ####
     def _read_temperature(self):
@@ -270,7 +282,6 @@ class SafeHelmet:
     worker's safety, thus the need for such a method that allows to set different retrieval intervals. 
     At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
     between one send and another.'''
-
     def _start_data_collection(self):
         self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
         self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
@@ -279,7 +290,6 @@ class SafeHelmet:
 
     '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
     for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
-
     def _stop_data_collection(self, accel=False):
         print("data collection stopped")
         if accel:
@@ -301,62 +311,104 @@ class SafeHelmet:
         if not self._connections:
             return
 
-        self.send_led.value(1)
+        if self._get_orientation() > STANDBY_TRESHOLD:
 
-        calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
-        temperature = calculate_mean(self._temperature)
-        humidity = calculate_mean(self._humidity)
-        lux = calculate_mean(self._lux)
-        crash_detection = 0  # Puoi aggiornare con valori reali se disponibili
+            self.send_led.value(1)
 
-        # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
-        sensor_states = 0
-        for i in range(3):  # Tre sensori
-            if random.random() < 0.1:  # 10% di probabilità
-                sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
+            wearables_bitmask = 0
 
-        # Maschera di anomalie (per ora impostata a zero)
-        anomaly_mask = 0b00000000
+            if self.welding_mask_gpio.value() == 0:  # device connected
+                wearables_bitmask = 1
+            if self.gas_mask_gpio.value() == 0:  # device connected
+                wearables_bitmask |= (1 << 1)
 
-        if temperature > TEMP_THRESHOLD:
-            anomaly_mask |= 0b00010000  # Anomalia temperatura
-        if humidity > HUMIDITY_THRESHOLD:
-            anomaly_mask |= 0b00001000  # Anomalia umidità
-        if lux > LUX_THRESHOLD:
-            anomaly_mask |= 0b00000100  # Anomalia luminosità
-        if crash_detection > CRASH_THRESHOLD:
-            anomaly_mask |= 0b00000010  # Anomalia crash detection
-        if sensor_states != 0:
-            anomaly_mask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
+            calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
+            temperature = calculate_mean(self._temperature)
+            humidity = calculate_mean(self._humidity)
+            lux = calculate_mean(self._lux)
+            crash_detection = 0  # Puoi aggiornare con valori reali se disponibili
 
-        print(anomaly_mask)
+            # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
+            sensor_states = 0
+            for i in range(3):  # Tre sensori
+                if random.random() < 0.1:  # 10% di probabilità
+                    sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-        # Crea il payload
-        payload = struct.pack("ffffBB", temperature, humidity, lux, crash_detection, sensor_states, anomaly_mask)
-        print(payload)
+            # Maschera di anomalie (per ora impostata a zero)
+            anomaly_bitmask = 0b00000000
 
-        print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b}".format(
-            temperature, humidity, lux, crash_detection, sensor_states))
+            if temperature > TEMP_THRESHOLD:
+                anomaly_bitmask |= 0b00010000  # Anomalia temperatura
+            if humidity > HUMIDITY_THRESHOLD:
+                anomaly_bitmask |= 0b00001000  # Anomalia umidità
+            if lux > LUX_THRESHOLD:
+                anomaly_bitmask |= 0b00000100  # Anomalia luminosità
+            if crash_detection > CRASH_THRESHOLD:
+                anomaly_bitmask |= 0b00000010  # Anomalia crash detection
+            if sensor_states != 0:
+                anomaly_bitmask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
 
-        # Invia il payload ai dispositivi connessi
+            print(anomaly_bitmask)
+
+            # Crea il payload
+            payload = struct.pack("ffffBB",
+                                  temperature,
+                                  humidity,
+                                  lux,
+                                  crash_detection,
+                                  sensor_states,
+                                  anomaly_bitmask,
+                                  wearables_bitmask
+                                  )
+
+
+            print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
+                temperature, humidity, lux, crash_detection, sensor_states, wearables_bitmask))
+
+            # Invia il payload ai dispositivi connessi
+            for conn_handle in self._connections:
+                self.ble.gatts_notify(conn_handle, self._data_handle, payload)
+                
+
+            # Aggiorna il display
+            self.display.write_text("Temp.: {:.1f}C".format(temperature))
+            self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
+            self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
+            self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=48)
+            self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=64)
+
+            self.send_led.value(0)
+
+            # Pulisce i dati raccolti
+            self._clean_collected_data()
+        else:
+            self._stop_data_collection()
+            self._standby_mode()
+
+    def _standby_mode(self):
+        print("Entering standby mode")
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._data_handle, payload)
+            self.ble.gatts_notify(conn_handle, self._state_handle, "Sleep: ON")
+        self.stop_virtual_timer(self.data_timer_id)
+        self.standby_led_timer_id = self.create_virtual_timer(500, self._toggle_standby_led)
+        self.standby_check_timer_id = self.create_virtual_timer(5000, self._check_standby_exit)
 
-        # Aggiorna il display
-        self.display.write_text("Temp.: {:.1f}C".format(temperature))
-        self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=16)
-        self.display.write_text("Lux.: {:.1f} lum".format(lux), clear=False, y=32)
-        self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=48)
-        self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=64)
+    def _check_standby_exit(self):
+        if self._get_orientation() > WAKEUP_TRESHOLD:
+            self.stop_virtual_timer(self.standby_led_timer_id)
+            self.stop_virtual_timer(self.standby_check_timer_id)
+            self.standby_led.value(0)
+            print("Exiting standby mode")
+            for conn_handle in self._connections:
+                self.ble.gatts_notify(conn_handle, self._state_handle, "Sleep: OFF")
 
-        self.send_led.value(0)
-
-        # Pulisce i dati raccolti
-        self._clean_collected_data()
+            self._clean_collected_data()
+            self._start_data_collection()
+            self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
 
 
 # Esegui il server BLE per sensori
-ble_sensor = SafeHelmet(data_interval=10)
+ble_sensor = SafeHelmet(data_interval=5)
 
 try:
     while True:
