@@ -135,6 +135,9 @@ class SafeHelmet:
         self.welding_mask_gpio = Pin(13, Pin.IN, Pin.PULL_UP)
         self.gas_mask_gpio = Pin(12, Pin.IN, Pin.PULL_UP)
 
+        self.vibration_gpio = Pin(14, Pin.OUT, Pin.PULL_UP)
+        self.vibration_gpio.value(1)
+
         # First value is total sum of readings, second value is number of readings
         self._temperature = [0, 0]
         self._humidity = [0, 0]
@@ -358,6 +361,9 @@ class SafeHelmet:
                 anomaly_bitmask |= 0b00000010  # Anomalia crash detection
             if sensor_states != 0:
                 anomaly_bitmask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
+
+            if anomaly_bitmask:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+                pass
 
             # Crea il payload
             payload = struct.pack("ffffBB",
