@@ -18,7 +18,7 @@ TELE-ESP-BOARD LEDS:
 '''
 
 # Set this to enable/disable ssd1306 display functionality
-DISPLAY = 1
+DISPLAY = 0
 
 TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
@@ -119,7 +119,6 @@ class SafeHelmet:
         self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
         self._service = (self._service_uuid, (self._data_char, self._state_char))
 
-        # Fix: Correct unpacking of service handles
         [handles] = self.ble.gatts_register_services([self._service])
         self._data_handle = handles[0]
         self._state_handle = handles[2]
@@ -202,13 +201,13 @@ class SafeHelmet:
 
     def create_virtual_timer(self, period, callback, one_shot=False):
         timer_id = len(self.virtual_timers)  # assign an id equal to the index in the list
-        print(timer_id)
+        #print(timer_id)
         self.virtual_timers.append(
             {"id": timer_id, "period": period, "callback": callback, "counter": 0, "one_shot": one_shot})
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
-        print("deleting timer {}".format(timer_id))
+        #print("deleting timer {}".format(timer_id))
         to_remove = None
         for i, vt in enumerate(self.virtual_timers):
             if vt["id"] == timer_id:
@@ -289,24 +288,52 @@ class SafeHelmet:
     def _get_orientation(self) -> float:
         return self.mpu.read_accel_data()['z']
 
+    def vibrate(self, duration_ms):
+        """
+        Activates the vibration motor for the specified duration in milliseconds.
+        """
+        print("vibrating motor")
+        self.vibration_gpio.value(0)  # Activate vibration
+        self.create_virtual_timer(duration_ms, self._vibration_stop, one_shot=True)
+
+    def _vibration_stop(self):
+        """
+        Callback function to stop the vibration motor after its duration.
+        """
+        print("stop vibrating motor")
+        self.vibration_gpio.value(1)  # Deactivate vibration
+
+    def vibration_notify(self):
+        self.vibrate(500)
+        self.create_virtual_timer(1000, lambda: self.vibrate(500), one_shot=True)
+        self.create_virtual_timer(2000, lambda: self.vibrate(500), one_shot=True)
+
+    def vibration_anomaly(self):
+        self.vibrate(1000)
+        self.create_virtual_timer(2000, lambda: self.vibrate(1000), one_shot=True)
+        self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
+        self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
+
     def _detect_crash(self):
         pass
 
-    '''Start collecting data from all sensors and calculating mean averages. Each sensor has a different priority in
-    worker's safety, thus the need for such a method that allows to set different retrieval intervals. 
-    At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
-    between one send and another.'''
-
     def _start_data_collection(self):
+        """
+        Start collecting data from all sensors and calculating mean averages. Each sensor has a different priority in
+        worker's safety, thus the need for such a method, that allows to set different retrieval intervals.
+        At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
+        between one send and another.
+        """
         self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
         self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        #self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
-
-    '''Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
-    for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.'''
+        # self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
 
     def _stop_data_collection(self):
+        """
+        Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
+        for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.
+        """
         print("data collection stopped")
         self._temp_timer = self.stop_virtual_timer(self._temp_timer)
         self.stop_virtual_timer(self._hum_timer)
@@ -363,7 +390,7 @@ class SafeHelmet:
                 anomaly_bitmask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
 
             if anomaly_bitmask:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
-                pass
+                self.vibration_notify()
 
             # Crea il payload
             payload = struct.pack("ffffBB",
