@@ -28,6 +28,10 @@ CRASH_THRESHOLD = 3.0  # Crash detection > 3 g
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
 
+POSTURE_Z_MIN = 4.0   # Z deve essere almeno 7.0 m/s^2
+POSTURE_XY_MAX = 3.0  # X e Y devono essere compresi entro ±3.0 m/s^2
+POSTURE_CHECK_INTERVAL = 1000  # in ms
+
 
 class Display:
     def __init__(self, i2c_obj):
@@ -125,6 +129,8 @@ class SafeHelmet:
 
         # Sensors setup and init
         self.standby = False
+        self.posture_incorrect_time = 0  # Tempo accumulato in postura scorretta (in ms)
+        self.posture_last_checked = 0  # Timestamp dell'ultima verifica
 
         self.dht_sensor = dht.DHT11(Pin(18))
         self.display = Display(self.i2c)
@@ -141,6 +147,7 @@ class SafeHelmet:
         self._temperature = [0, 0]
         self._humidity = [0, 0]
         self._lux = [0, 0]
+        self._posture = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
 
         # Physical and virtual timers init
         self.data_interval = data_interval
@@ -271,6 +278,25 @@ class SafeHelmet:
         self.standby_led.value(not self.standby_led.value())
 
     #### DATA COLLECTING METHODS ####
+
+    def _check_posture(self):
+        # Leggi i dati dell'accelerometro
+        accel_data = self.mpu.read_accel_data()
+        x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
+
+        self._posture["x"][0] += x
+        self._posture["y"][0] += y
+        self._posture["z"][0] += z
+        self._posture["x"][1] += 1
+        self._posture["y"][1] += 1
+        self._posture["z"][1] += 1
+
+        print(accel_data)
+
+        # Verifica se i valori sono fuori dai limiti
+        if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
+            self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
+
     def _read_temperature(self):
         self.dht_sensor.measure()
         self._temperature[0] += self.dht_sensor.temperature()
@@ -327,7 +353,7 @@ class SafeHelmet:
         self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
         self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        # self._accel_timer = self.create_virtual_timer(10000, self._get_orientation)
+        self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
 
     def _stop_data_collection(self):
         """
@@ -335,9 +361,10 @@ class SafeHelmet:
         for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.
         """
         print("data collection stopped")
-        self._temp_timer = self.stop_virtual_timer(self._temp_timer)
+        self.stop_virtual_timer(self._temp_timer)
         self.stop_virtual_timer(self._hum_timer)
         self.stop_virtual_timer(self._lux_timer)
+        self.stop_virtual_timer(self._posture_timer)
         self._clean_collected_data()
 
     def _clean_collected_data(self):
@@ -367,7 +394,18 @@ class SafeHelmet:
             temperature = calculate_mean(self._temperature)
             humidity = calculate_mean(self._humidity)
             lux = calculate_mean(self._lux)
-            crash_detection = 0  # Puoi aggiornare con valori reali se disponibili
+
+            posture_dict = {}
+            for k, v in self._posture.items():
+                posture_dict[k] = v[0]/v[1]
+
+            print(posture_dict)
+
+            incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
+            print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw*100))
+            self.posture_incorrect_time = 0
+
+            crash_detection = 0
 
             # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
             sensor_states = 0
@@ -375,22 +413,9 @@ class SafeHelmet:
                 if random.random() < 0.1:  # 10% di probabilità
                     sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-            # Maschera di anomalie (per ora impostata a zero)
-            anomaly_bitmask = 0b00000000
-
-            if temperature > TEMP_THRESHOLD:
-                anomaly_bitmask |= 0b00010000  # Anomalia temperatura
-            if humidity > HUMIDITY_THRESHOLD:
-                anomaly_bitmask |= 0b00001000  # Anomalia umidità
-            if lux > LUX_THRESHOLD:
-                anomaly_bitmask |= 0b00000100  # Anomalia luminosità
-            if crash_detection > CRASH_THRESHOLD:
-                anomaly_bitmask |= 0b00000010  # Anomalia crash detection
-            if sensor_states != 0:
-                anomaly_bitmask |= 0b00000001  # Anomalia sensori di gas (almeno uno attivo)
-
-            if anomaly_bitmask:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
-                self.vibration_notify()
+            if sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+                pass
+                #self.vibration_notify()
 
             # Crea il payload
             payload = struct.pack("ffffBB",
@@ -399,7 +424,6 @@ class SafeHelmet:
                                   lux,
                                   crash_detection,
                                   sensor_states,
-                                  anomaly_bitmask,
                                   wearables_bitmask
                                   )
 
