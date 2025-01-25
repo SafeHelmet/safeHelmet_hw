@@ -9,6 +9,7 @@ import ssd1306
 from MPU6050 import MPU6050
 from bh1750 import BH1750
 import dht
+from math import sqrt
 
 '''
 TELE-ESP-BOARD LEDS:
@@ -23,7 +24,8 @@ DISPLAY = 0
 TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
-CRASH_THRESHOLD = 3.0  # Crash detection > 3 g
+CRASH_THRESHOLD = 5.0 * 9.81  # Crash detection > 5 g
+MAGNITUDO_WINDOW = 3
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
@@ -118,10 +120,20 @@ class SafeHelmet:
         self._data_uuid = ubluetooth.UUID(uuids['data'])
         self._state_uuid = ubluetooth.UUID(uuids['state'])
 
-        self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
+        self._data_char = (
+            self._data_uuid,
+            ubluetooth.FLAG_NOTIFY,
+            [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ),]
+        )
         self._state_char = (
-        self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
-        self._service = (self._service_uuid, (self._data_char, self._state_char))
+            self._state_uuid,
+            ubluetooth.FLAG_NOTIFY,
+            [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ]
+        )
+        self._service = (
+            self._service_uuid,
+            (self._data_char, self._state_char)
+        )
 
         [handles] = self.ble.gatts_register_services([self._service])
         self._data_handle = handles[0]
@@ -148,6 +160,10 @@ class SafeHelmet:
         self._humidity = [0, 0]
         self._lux = [0, 0]
         self._posture = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
+        self._magnitudo = []
+        self._magnitudo_mean = 0
+        self._magnitudo_dev_std = 0
+        self._magnitudo_max = 0
 
         # Physical and virtual timers init
         self.data_interval = data_interval
@@ -159,6 +175,7 @@ class SafeHelmet:
         self.data_timer_id = None  # store the id of the data timer
         self.standby_check_timer_id = None
         self.standby_led_timer_id = None
+        self._crash_detection_timer = None
 
         self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
         self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
@@ -340,8 +357,28 @@ class SafeHelmet:
         self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
         self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
 
+    # Acceleration stats for future machine learning
+    def accel_stats(self):
+        n = len(self._magnitudo)
+        if n == 0:
+            return 0, 0, 0, 0
+        self._magnitudo_mean = sum(self._magnitudo) / n
+        magnitudo_variance = sum((x - self._magnitudo_mean) ** 2 for x in self._magnitudo) / n
+        self._magnitudo_dev_std = sqrt(magnitudo_variance)
+        self._magnitudo_max = max(self._magnitudo)
+
+    # Funzione principale per la raccolta dati e crash detection
     def _detect_crash(self):
-        pass
+        module = self.mpu.read_accel_abs()
+        self._magnitudo.append(module)
+        if len(self._magnitudo) > MAGNITUDO_WINDOW:
+            self._magnitudo.pop(0)
+
+        self.accel_stats()
+
+        # Crash detection basata sulla soglia indicativa
+        if module > CRASH_THRESHOLD:
+            print(f"Urto rilevato! Modulo: {module:.2f} m/s2")
 
     def _start_data_collection(self):
         """
@@ -354,6 +391,7 @@ class SafeHelmet:
         self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
         self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
+        #  self._crash_detection_timer = self.create_virtual_timer(100, self._detect_crash)
 
     def _stop_data_collection(self):
         """
