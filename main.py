@@ -30,7 +30,7 @@ MAGNITUDO_WINDOW = 3
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
 
-POSTURE_Z_MIN = 4.0   # Z deve essere almeno 7.0 m/s^2
+POSTURE_Z_MIN = 4.0  # Z deve essere almeno 7.0 m/s^2
 POSTURE_XY_MAX = 3.0  # X e Y devono essere compresi entro ±3.0 m/s^2
 POSTURE_CHECK_INTERVAL = 1000  # in ms
 
@@ -123,7 +123,7 @@ class SafeHelmet:
         self._data_char = (
             self._data_uuid,
             ubluetooth.FLAG_NOTIFY,
-            [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ),]
+            [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ]
         )
         self._state_char = (
             self._state_uuid,
@@ -225,13 +225,13 @@ class SafeHelmet:
 
     def create_virtual_timer(self, period, callback, one_shot=False):
         timer_id = len(self.virtual_timers)  # assign an id equal to the index in the list
-        #print(timer_id)
+        # print(timer_id)
         self.virtual_timers.append(
             {"id": timer_id, "period": period, "callback": callback, "counter": 0, "one_shot": one_shot})
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
-        #print("deleting timer {}".format(timer_id))
+        # print("deleting timer {}".format(timer_id))
         to_remove = None
         for i, vt in enumerate(self.virtual_timers):
             if vt["id"] == timer_id:
@@ -315,14 +315,33 @@ class SafeHelmet:
             self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
 
     def _read_temperature(self):
-        self.dht_sensor.measure()
-        self._temperature[0] += self.dht_sensor.temperature()
-        self._temperature[1] += 1
+        try:
+            self.dht_sensor.measure()
+            self._temperature[0] += self.dht_sensor.temperature()
+            self._temperature[1] += 1
+            print("TEMPERATURA LETTA")
+        except OSError as e:
+            print(f"Errore nella lettura della temperatura: {e}")
 
     def _read_humidity(self):
-        self.dht_sensor.measure()
-        self._humidity[0] += self.dht_sensor.humidity()
-        self._humidity[1] += 1
+        try:
+            self.dht_sensor.measure()
+            self._humidity[0] += self.dht_sensor.humidity()
+            self._humidity[1] += 1
+            print("UMIDITA LETTA")
+        except OSError as e:
+            print(f"Errore nella lettura dell'umidità: {e}")
+
+    def _read_dht(self):
+        try:
+            self.dht_sensor.measure()
+            self._temperature[0] += self.dht_sensor.temperature()
+            self._temperature[1] += 1
+            self._humidity[0] += self.dht_sensor.humidity()
+            self._humidity[1] += 1
+            print("DATI LETTI")
+        except OSError as e:
+            print(f"Errore nella lettura dei dati: {e}")
 
     def _read_lux(self):
         self._lux[0] += self.light_sensor.luminance()
@@ -387,8 +406,9 @@ class SafeHelmet:
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
         between one send and another.
         """
-        self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
-        self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
+        #  self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
+        #  self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
+        self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
         self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
         #  self._crash_detection_timer = self.create_virtual_timer(100, self._detect_crash)
@@ -399,8 +419,9 @@ class SafeHelmet:
         for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.
         """
         print("data collection stopped")
-        self.stop_virtual_timer(self._temp_timer)
-        self.stop_virtual_timer(self._hum_timer)
+        #  self.stop_virtual_timer(self._temp_timer)
+        #  self.stop_virtual_timer(self._hum_timer)
+        self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
         self.stop_virtual_timer(self._posture_timer)
         self._clean_collected_data()
@@ -435,12 +456,12 @@ class SafeHelmet:
 
             posture_dict = {}
             for k, v in self._posture.items():
-                posture_dict[k] = v[0]/v[1]
+                posture_dict[k] = v[0] / v[1]
 
             print(posture_dict)
 
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
-            print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw*100))
+            print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
             self.posture_incorrect_time = 0
 
             crash_detection = 0
@@ -453,7 +474,7 @@ class SafeHelmet:
 
             if sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 pass
-                #self.vibration_notify()
+                # self.vibration_notify()
 
             # Crea il payload
             payload = struct.pack("ffffBB",
