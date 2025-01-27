@@ -9,6 +9,7 @@ import ssd1306
 from MPU6050 import MPU6050
 from bh1750 import BH1750
 import dht
+from math import sqrt
 
 '''
 TELE-ESP-BOARD LEDS:
@@ -23,7 +24,8 @@ DISPLAY = 0
 TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
-CRASH_THRESHOLD = 3.0  # Crash detection > 3 g
+CRASH_THRESHOLD = 5.0 * 9.81  # Crash detection > 5 g
+MAGNITUDO_WINDOW = 3
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
@@ -117,15 +119,34 @@ class SafeHelmet:
         self._service_uuid = ubluetooth.UUID(uuids['service'])
         self._data_uuid = ubluetooth.UUID(uuids['data'])
         self._state_uuid = ubluetooth.UUID(uuids['state'])
+        self._feedback_uuid = ubluetooth.UUID(uuids['feedback'])
 
-        self._data_char = (self._data_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ])
+        self._data_char = (
+            self._data_uuid,
+            ubluetooth.FLAG_NOTIFY,
+            [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ),]
+        )
         self._state_char = (
-        self._state_uuid, ubluetooth.FLAG_NOTIFY, [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ])
-        self._service = (self._service_uuid, (self._data_char, self._state_char))
+            self._state_uuid,
+            ubluetooth.FLAG_NOTIFY,
+            [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ]
+        )
+        self._feedback_char = (
+            self._feedback_uuid,
+            ubluetooth.FLAG_WRITE,  # Important: WRITE flag
+            [(ubluetooth.UUID(0x0046), ubluetooth.FLAG_READ), ]
+        )
+        self._service = (
+            self._service_uuid,
+            (self._data_char, self._state_char, self._feedback_char)
+        )
 
         [handles] = self.ble.gatts_register_services([self._service])
         self._data_handle = handles[0]
         self._state_handle = handles[2]
+        self._feedback_handle = handles[4]
+
+        self._feedback = None
 
         # Sensors setup and init
         self.standby = False
@@ -148,6 +169,10 @@ class SafeHelmet:
         self._humidity = [0, 0]
         self._lux = [0, 0]
         self._posture = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
+        self._magnitudo = []
+        self._magnitudo_mean = 0
+        self._magnitudo_dev_std = 0
+        self._magnitudo_max = 0
 
         # Physical and virtual timers init
         self.data_interval = data_interval
@@ -159,6 +184,8 @@ class SafeHelmet:
         self.data_timer_id = None  # store the id of the data timer
         self.standby_check_timer_id = None
         self.standby_led_timer_id = None
+        self._crash_detection_timer = None
+        self._dht_timer = None
 
         self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
         self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
@@ -188,7 +215,8 @@ class SafeHelmet:
         return {
             'service': create_uuid('1'),  # Service UUID
             'data': create_uuid('2'),  # Data characteristic UUID
-            'state': create_uuid('3')  # State characteristic UUID
+            'state': create_uuid('3'),  # State characteristic UUID
+            'feedback': create_uuid('4')  # Command characteristic UUID
         }
 
     def _virtual_timer_callback(self, timer):
@@ -228,6 +256,7 @@ class SafeHelmet:
 
     # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
+        print("miao")
         if event == 1:
             conn_handle, _, _ = data
             self._connections.add(conn_handle)
@@ -257,7 +286,11 @@ class SafeHelmet:
                 self.standby = False
 
         elif event == 3:
-            print("Writing is not supported on this characteristic")
+            print(data)
+            conn_handle, value = data
+            value = bytes(value).decode('utf-8')
+            print("Received command: {}".format(value))
+
 
     def _start_advertising(self):
         name = b'SafeHelmet-01'
@@ -291,19 +324,14 @@ class SafeHelmet:
         self._posture["y"][1] += 1
         self._posture["z"][1] += 1
 
-        print(accel_data)
-
         # Verifica se i valori sono fuori dai limiti
         if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
             self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
 
-    def _read_temperature(self):
+    def _read_dht(self):
         self.dht_sensor.measure()
         self._temperature[0] += self.dht_sensor.temperature()
         self._temperature[1] += 1
-
-    def _read_humidity(self):
-        self.dht_sensor.measure()
         self._humidity[0] += self.dht_sensor.humidity()
         self._humidity[1] += 1
 
@@ -340,8 +368,28 @@ class SafeHelmet:
         self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
         self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
 
+    # Acceleration stats for future machine learning
+    def accel_stats(self):
+        n = len(self._magnitudo)
+        if n == 0:
+            return 0, 0, 0, 0
+        self._magnitudo_mean = sum(self._magnitudo) / n
+        magnitudo_variance = sum((x - self._magnitudo_mean) ** 2 for x in self._magnitudo) / n
+        self._magnitudo_dev_std = sqrt(magnitudo_variance)
+        self._magnitudo_max = max(self._magnitudo)
+
+    # Funzione principale per la raccolta dati e crash detection
     def _detect_crash(self):
-        pass
+        module = self.mpu.read_accel_abs()
+        self._magnitudo.append(module)
+        if len(self._magnitudo) > MAGNITUDO_WINDOW:
+            self._magnitudo.pop(0)
+
+        self.accel_stats()
+
+        # Crash detection basata sulla soglia indicativa
+        if module > CRASH_THRESHOLD:
+            print(f"Urto rilevato! Modulo: {module:.2f} m/s2")
 
     def _start_data_collection(self):
         """
@@ -350,10 +398,12 @@ class SafeHelmet:
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
         between one send and another.
         """
-        self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
-        self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
+        # self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
+        # self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
+        self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
         self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
+        #  self._crash_detection_timer = self.create_virtual_timer(100, self._detect_crash)
 
     def _stop_data_collection(self):
         """
@@ -361,8 +411,9 @@ class SafeHelmet:
         for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.
         """
         print("data collection stopped")
-        self.stop_virtual_timer(self._temp_timer)
-        self.stop_virtual_timer(self._hum_timer)
+        # self.stop_virtual_timer(self._temp_timer)
+        # self.stop_virtual_timer(self._hum_timer)
+        self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
         self.stop_virtual_timer(self._posture_timer)
         self._clean_collected_data()
@@ -374,6 +425,13 @@ class SafeHelmet:
         self._humidity[1] = 0
         self._lux[0] = 0
         self._lux[1] = 0
+
+        # self._posture["x"][0] = 0
+        # self._posture["y"][0] = 0
+        # self._posture["z"][0] = 0
+        # self._posture["x"][1] = 0
+        # self._posture["y"][1] = 0
+        # self._posture["z"][1] = 0
 
     def _send_data(self):
         if not self._connections:
@@ -399,7 +457,7 @@ class SafeHelmet:
             for k, v in self._posture.items():
                 posture_dict[k] = v[0]/v[1]
 
-            print(posture_dict)
+            # print(posture_dict)
 
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
             print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw*100))
@@ -435,12 +493,17 @@ class SafeHelmet:
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._data_handle, payload)
 
+            self._feedback = self.ble.gatts_read(self._feedback_handle)
+
+            self.ble.gatts_write(self._feedback_handle, '', True)
+
             # Aggiorna il display
-            self.display.write_text("Temp.: {:.1f}C".format(temperature))
-            self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=10)
-            self.display.write_text("Lux.: {:.1f}".format(lux), clear=False, y=20)
-            self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=30)
-            self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=40)
+            if DISPLAY:
+                self.display.write_text("Temp.: {:.1f}C".format(temperature))
+                self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=10)
+                self.display.write_text("Lux.: {:.1f}".format(lux), clear=False, y=20)
+                self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=30)
+                self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=40)
 
             self.send_led.value(0)
 
