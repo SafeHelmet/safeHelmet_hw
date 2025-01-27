@@ -83,6 +83,7 @@ class MPU6050(object):
         try:
             # Wake up the MPU-6050 since it starts in sleep mode
             self.i2c.writeto_mem(self.addr, _PWR_MGMT_1, bytes([0x00]))
+            self.i2c.writeto_mem(self.addr, 0x1C, bytes([0x10]))  # 0x10=8g, 0x18=16g
             sleep_ms(5)
         except Exception as e:
             print(i2c_err_str.format(self.addr))

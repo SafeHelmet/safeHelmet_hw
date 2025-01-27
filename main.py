@@ -25,7 +25,8 @@ TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
 CRASH_THRESHOLD = 5.0 * 9.81  # Crash detection > 5 g
-MAGNITUDO_WINDOW = 3
+#  MAGNITUDO_WINDOW = 20 #  16
+CRASH_CHECK_INTERVAL = 200  # in ms
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
@@ -160,10 +161,18 @@ class SafeHelmet:
         self._humidity = [0, 0]
         self._lux = [0, 0]
         self._posture = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
-        self._magnitudo = []
-        self._magnitudo_mean = 0
-        self._magnitudo_dev_std = 0
-        self._magnitudo_max = 0
+        #  self._magnitudo = []
+        #  self._magnitudo_mean = 0
+        #  self._magnitudo_dev_std = 0
+        #  self._magnitudo_max = 0
+        #  self._is_crash = 0
+        self._module_stats = {
+            "sum_acc": 0,  # Somma delle accelerazioni
+            "sum_acc_squared": 0,  # Somma dei quadrati delle accelerazioni
+            "count": 0,  # Numero di campioni
+            "crash_flag": False,  # Flag per il crash
+            "current_max": float('-inf')  # Valore massimo nell'intervallo
+        }
 
         # Physical and virtual timers init
         self.data_interval = data_interval
@@ -319,7 +328,7 @@ class SafeHelmet:
             self.dht_sensor.measure()
             self._temperature[0] += self.dht_sensor.temperature()
             self._temperature[1] += 1
-            print("TEMPERATURA LETTA")
+            #  print("TEMPERATURA LETTA")
         except OSError as e:
             print(f"Errore nella lettura della temperatura: {e}")
 
@@ -328,7 +337,7 @@ class SafeHelmet:
             self.dht_sensor.measure()
             self._humidity[0] += self.dht_sensor.humidity()
             self._humidity[1] += 1
-            print("UMIDITA LETTA")
+            #  print("UMIDITA LETTA")
         except OSError as e:
             print(f"Errore nella lettura dell'umidità: {e}")
 
@@ -339,7 +348,7 @@ class SafeHelmet:
             self._temperature[1] += 1
             self._humidity[0] += self.dht_sensor.humidity()
             self._humidity[1] += 1
-            print("DATI LETTI")
+            #  print("DATI LETTI")
         except OSError as e:
             print(f"Errore nella lettura dei dati: {e}")
 
@@ -376,28 +385,15 @@ class SafeHelmet:
         self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
         self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
 
-    # Acceleration stats for future machine learning
-    def accel_stats(self):
-        n = len(self._magnitudo)
-        if n == 0:
-            return 0, 0, 0, 0
-        self._magnitudo_mean = sum(self._magnitudo) / n
-        magnitudo_variance = sum((x - self._magnitudo_mean) ** 2 for x in self._magnitudo) / n
-        self._magnitudo_dev_std = sqrt(magnitudo_variance)
-        self._magnitudo_max = max(self._magnitudo)
-
-    # Funzione principale per la raccolta dati e crash detection
     def _detect_crash(self):
         module = self.mpu.read_accel_abs()
-        self._magnitudo.append(module)
-        if len(self._magnitudo) > MAGNITUDO_WINDOW:
-            self._magnitudo.pop(0)
-
-        self.accel_stats()
-
-        # Crash detection basata sulla soglia indicativa
+        self._module_stats["count"] += 1
+        self._module_stats["sum_acc"] += module
+        self._module_stats["sum_acc_squared"] += module ** 2
         if module > CRASH_THRESHOLD:
-            print(f"Urto rilevato! Modulo: {module:.2f} m/s2")
+            print(f"Urto rilevato! Modulo: {module:.1f} m/s2")
+            self._module_stats["crash_flag"] = True
+        self._module_stats["current_max"] = max(self._module_stats["current_max"], module)
 
     def _start_data_collection(self):
         """
@@ -411,7 +407,7 @@ class SafeHelmet:
         self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
         self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
-        #  self._crash_detection_timer = self.create_virtual_timer(100, self._detect_crash)
+        self._crash_detection_timer = self.create_virtual_timer(CRASH_CHECK_INTERVAL, self._detect_crash)
 
     def _stop_data_collection(self):
         """
@@ -424,6 +420,7 @@ class SafeHelmet:
         self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
         self.stop_virtual_timer(self._posture_timer)
+        self.stop_virtual_timer(self._crash_detection_timer)
         self._clean_collected_data()
 
     def _clean_collected_data(self):
@@ -433,6 +430,14 @@ class SafeHelmet:
         self._humidity[1] = 0
         self._lux[0] = 0
         self._lux[1] = 0
+        self.posture_incorrect_time = 0  # reset posture incorrect time
+        #  self._magnitudo = []
+        #  self._is_crash = 0
+        self._module_stats["sum_acc"] = 0
+        self._module_stats["sum_acc_squared"] = 0
+        self._module_stats["count"] = 0
+        self._module_stats["crash_flag"] = False
+        self._module_stats["current_max"] = float('-inf')
 
     def _send_data(self):
         if not self._connections:
@@ -456,15 +461,30 @@ class SafeHelmet:
 
             posture_dict = {}
             for k, v in self._posture.items():
-                posture_dict[k] = v[0] / v[1]
+                posture_dict[k] = v[0] / v[1] if v[1] != 0 else 0  # evitare ZeroDivisionError
 
             print(posture_dict)
 
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
+            print("Totale: {} - Incorretto: {}".format(self.data_interval * 1000, self.posture_incorrect_time))
             print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
             self.posture_incorrect_time = 0
 
-            crash_detection = 0
+            #  crash_detection = 0
+            #  if len(self._magnitudo) == MAGNITUDO_WINDOW:
+            #      self.accel_stats()
+            #      print("MEDIA MAGNITUDO: {:.1f} / DEV_STD MAGNITUDO: {:.1f} / MAX_MAGNITUDO: {:.1f}".format(self._magnitudo_mean, self._magnitudo_dev_std, self._magnitudo_max))
+
+            if self._module_stats["count"] == 0:
+                print("Nessun dato da inviare.")
+            else:
+                # Calcola media e deviazione standard
+                mean_acc = self._module_stats["sum_acc"] / self._module_stats["count"]
+                variance = (self._module_stats["sum_acc_squared"] / self._module_stats["count"]) - (mean_acc ** 2)
+                std_dev = sqrt(variance)
+                # Invia i dati
+                print(f"Media: {mean_acc:.2f}, Deviazione Standard: {std_dev:.2f}, "
+                      f"Max: {self._module_stats['current_max']:.2f}, Crash: {self._module_stats['crash_flag']}")
 
             # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
             sensor_states = 0
@@ -481,14 +501,14 @@ class SafeHelmet:
                                   temperature,
                                   humidity,
                                   lux,
-                                  crash_detection,
+                                  self._module_stats["crash_flag"],  # crash_detection,
                                   sensor_states,
                                   wearables_bitmask
                                   )
 
             print(
                 "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
-                    temperature, humidity, lux, crash_detection, sensor_states, wearables_bitmask))
+                    temperature, humidity, lux, self._module_stats["crash_flag"], sensor_states, wearables_bitmask))
 
             # Invia il payload ai dispositivi connessi
             for conn_handle in self._connections:
@@ -498,7 +518,7 @@ class SafeHelmet:
             self.display.write_text("Temp.: {:.1f}C".format(temperature))
             self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=10)
             self.display.write_text("Lux.: {:.1f}".format(lux), clear=False, y=20)
-            self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=30)
+            self.display.write_text("Crash: {:.2f} g".format(self._module_stats["crash_flag"]), clear=False, y=30)
             self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=40)
 
             self.send_led.value(0)
