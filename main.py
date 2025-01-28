@@ -402,8 +402,6 @@ class SafeHelmet:
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
         between one send and another.
         """
-        # self._temp_timer = self.create_virtual_timer(1000, self._read_temperature)
-        # self._hum_timer = self.create_virtual_timer(3000, self._read_humidity)
         self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
         self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
@@ -430,12 +428,14 @@ class SafeHelmet:
         self._lux[0] = 0
         self._lux[1] = 0
 
-        # self._posture["x"][0] = 0
-        # self._posture["y"][0] = 0
-        # self._posture["z"][0] = 0
-        # self._posture["x"][1] = 0
-        # self._posture["y"][1] = 0
-        # self._posture["z"][1] = 0
+        self._posture["x"][0] = 0
+        self._posture["y"][0] = 0
+        self._posture["z"][0] = 0
+        self._posture["x"][1] = 0
+        self._posture["y"][1] = 0
+        self._posture["z"][1] = 0
+        
+        self.posture_incorrect_time = 0
 
     def _send_data(self):
         if not self._connections:
@@ -466,12 +466,12 @@ class SafeHelmet:
 
             if sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 pass
-                #self.vibration_notify()
+                # self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
             posture_dict = {}
             for k, v in self._posture.items():
-                posture_dict[k] = v[0] / v[1]
+                posture_dict[k] = v[0] / v[1] if v[1] != 0 else 0
 
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
             print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
