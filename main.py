@@ -30,7 +30,7 @@ MAGNITUDO_WINDOW = 3
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
 
-POSTURE_Z_MIN = 4.0   # Z deve essere almeno 7.0 m/s^2
+POSTURE_Z_MIN = 4.0  # Z deve essere almeno 7.0 m/s^2
 POSTURE_XY_MAX = 3.0  # X e Y devono essere compresi entro ±3.0 m/s^2
 POSTURE_CHECK_INTERVAL = 1000  # in ms
 
@@ -124,27 +124,33 @@ class SafeHelmet:
         self._data_char = (
             self._data_uuid,
             ubluetooth.FLAG_NOTIFY,
-            [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ),]
+            [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ]
         )
-        self._state_char = (
-            self._state_uuid,
+        self._accel_char = (
+            self._data_uuid,
             ubluetooth.FLAG_NOTIFY,
-            [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ]
+            [(ubluetooth.UUID(0x0043), ubluetooth.FLAG_READ), ]
         )
         self._feedback_char = (
             self._feedback_uuid,
             ubluetooth.FLAG_WRITE,  # Important: WRITE flag
             [(ubluetooth.UUID(0x0046), ubluetooth.FLAG_READ), ]
         )
+        self._state_char = (
+            self._state_uuid,
+            ubluetooth.FLAG_NOTIFY,
+            [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ]
+        )
         self._service = (
             self._service_uuid,
-            (self._data_char, self._state_char, self._feedback_char)
+            (self._data_char, self._accel_char, self._feedback_char, self._state_char)
         )
 
         [handles] = self.ble.gatts_register_services([self._service])
         self._data_handle = handles[0]
-        self._state_handle = handles[2]
+        self._accel_handle = handles[2]
         self._feedback_handle = handles[4]
+        self._state_handle = handles[6]
 
         self._feedback = None
 
@@ -256,7 +262,6 @@ class SafeHelmet:
 
     # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
-        print("miao")
         if event == 1:
             conn_handle, _, _ = data
             self._connections.add(conn_handle)
@@ -290,7 +295,6 @@ class SafeHelmet:
             conn_handle, value = data
             value = bytes(value).decode('utf-8')
             print("Received command: {}".format(value))
-
 
     def _start_advertising(self):
         name = b'SafeHelmet-01'
@@ -441,29 +445,18 @@ class SafeHelmet:
 
             self.send_led.value(1)
 
+            # WEARABLES DETECTION
             wearables_bitmask = 0
-
             if self.welding_mask_gpio.value() == 0:  # device connected
                 wearables_bitmask = 1
             if self.gas_mask_gpio.value() == 0:  # device connected
                 wearables_bitmask |= (1 << 1)
 
+            # DATA MEAN AVERAGE CALCULATION
             calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
             temperature = calculate_mean(self._temperature)
             humidity = calculate_mean(self._humidity)
             lux = calculate_mean(self._lux)
-
-            posture_dict = {}
-            for k, v in self._posture.items():
-                posture_dict[k] = v[0]/v[1]
-
-            # print(posture_dict)
-
-            incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
-            print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw*100))
-            self.posture_incorrect_time = 0
-
-            crash_detection = 0
 
             # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
             sensor_states = 0
@@ -475,23 +468,41 @@ class SafeHelmet:
                 pass
                 #self.vibration_notify()
 
+            # POSTURE MEAN AVERAGE AND CRASH DETECTION
+            posture_dict = {}
+            for k, v in self._posture.items():
+                posture_dict[k] = v[0] / v[1]
+
+            incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
+            print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
+            self.posture_incorrect_time = 0
+            crash_detection = 0
+
             # Crea il payload
-            payload = struct.pack("ffffBB",
-                                  temperature,
-                                  humidity,
-                                  lux,
-                                  crash_detection,
-                                  sensor_states,
-                                  wearables_bitmask
-                                  )
+            data_payload = struct.pack("ffffBB",
+                                       temperature,
+                                       humidity,
+                                       lux,
+                                       sensor_states,
+                                       wearables_bitmask
+                                       )
 
             print(
                 "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
                     temperature, humidity, lux, crash_detection, sensor_states, wearables_bitmask))
 
+            accel_payload = struct.pack("fffff",
+                                        posture_dict["x"],
+                                        posture_dict["y"],
+                                        posture_dict["z"],
+                                        crash_detection,
+                                        incorrect_posture_percent_raw
+                                        )
+
             # Invia il payload ai dispositivi connessi
             for conn_handle in self._connections:
-                self.ble.gatts_notify(conn_handle, self._data_handle, payload)
+                self.ble.gatts_notify(conn_handle, self._data_handle, data_payload)
+                self.ble.gatts_notify(conn_handle, self._accel_handle, accel_payload)
 
             self._feedback = self.ble.gatts_read(self._feedback_handle)
 
