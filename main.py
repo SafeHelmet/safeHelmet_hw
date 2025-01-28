@@ -180,6 +180,9 @@ class SafeHelmet:
         self._magnitudo_dev_std = 0
         self._magnitudo_max = 0
 
+        self.movement_cumulative = 0  # Movimento cumulativo tra due chiamate a send_data()
+        self.last_accel = {"x": 0, "y": 0, "z": 0}  # Ultima lettura dell'accelerometro
+
         # Physical and virtual timers init
         self.data_interval = data_interval
         self.base_interval = 60  # 100ms precision on virtual timers
@@ -316,21 +319,6 @@ class SafeHelmet:
 
     #### DATA COLLECTING METHODS ####
 
-    def _check_posture(self):
-        # Leggi i dati dell'accelerometro
-        accel_data = self.mpu.read_accel_data()
-        x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-
-        self._posture["x"][0] += x
-        self._posture["y"][0] += y
-        self._posture["z"][0] += z
-        self._posture["x"][1] += 1
-        self._posture["y"][1] += 1
-        self._posture["z"][1] += 1
-
-        # Verifica se i valori sono fuori dai limiti
-        if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
-            self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
 
     def _read_dht(self):
         self.dht_sensor.measure()
@@ -395,6 +383,33 @@ class SafeHelmet:
         if module > CRASH_THRESHOLD:
             print(f"Urto rilevato! Modulo: {module:.2f} m/s2")
 
+    def _check_posture_movement(self):
+        # Leggi i dati dell'accelerometro
+        accel_data = self.mpu.read_accel_data()
+        x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
+
+        self._posture["x"][0] += x
+        self._posture["y"][0] += y
+        self._posture["z"][0] += z
+        self._posture["x"][1] += 1
+        self._posture["y"][1] += 1
+        self._posture["z"][1] += 1
+
+        # Verifica se i valori sono fuori dai limiti
+        if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
+            self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
+
+        # Calcola la variazione rispetto alla lettura precedente (movimento)
+        delta_x = x - self.last_accel["x"]
+        delta_y = y - self.last_accel["y"]
+        delta_z = z - self.last_accel["z"]
+
+        # Aggiungi la variazione cumulativa al movimento totale
+        self.movement_cumulative += (delta_x ** 2 + delta_y ** 2 + delta_z ** 2) ** 0.5
+
+        # Aggiorna l'ultima lettura
+        self.last_accel = {"x": x, "y": y, "z": z}
+
     def _start_data_collection(self):
         """
         Start collecting data from all sensors and calculating mean averages. Each sensor has a different priority in
@@ -404,13 +419,12 @@ class SafeHelmet:
         """
         self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture)
+        self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture_movement)
         #  self._crash_detection_timer = self.create_virtual_timer(100, self._detect_crash)
 
     def _stop_data_collection(self):
         """
-        Stop data collection. By default, accelerometer data continues to be retrieved in order to provide
-        for entering/exiting standby mode. To stop that (for example when advertising), just set accel = True.
+        Stop data collection.
         """
         print("data collection stopped")
         # self.stop_virtual_timer(self._temp_timer)
@@ -436,12 +450,17 @@ class SafeHelmet:
         self._posture["z"][1] = 0
         
         self.posture_incorrect_time = 0
+        self.movement_cumulative = 0
 
     def _send_data(self):
         if not self._connections:
             return
 
-        if self._get_orientation() > STANDBY_TRESHOLD:
+        if self.last_accel["z"] < STANDBY_TRESHOLD and self.movement_cumulative < 1.0:
+            self.movement_cumulative = 0
+            self._standby_mode()
+
+        else:
 
             self.send_led.value(1)
 
@@ -520,12 +539,10 @@ class SafeHelmet:
 
             # Pulisce i dati raccolti
             self._clean_collected_data()
-        else:
-            self._stop_data_collection()
-            self._standby_mode()
 
     def _standby_mode(self):
         print("Entering standby mode")
+        self._stop_data_collection()
         self.standby = True
         for conn_handle in self._connections:
             self.ble.gatts_notify(conn_handle, self._state_handle, (0x1).to_bytes(1, 'little'))
@@ -537,7 +554,7 @@ class SafeHelmet:
         self.display.write_text("-Standby mode-")
 
     def _check_standby_exit(self):
-        if self._get_orientation() > WAKEUP_TRESHOLD:
+        if self._get_orientation() > STANDBY_TRESHOLD:
             self.stop_virtual_timer(self.standby_led_timer_id)
             self.stop_virtual_timer(self.standby_check_timer_id)
             self.standby_led.value(0)
