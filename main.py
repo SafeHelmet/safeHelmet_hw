@@ -528,7 +528,8 @@ class SafeHelmet:
         print("Entering standby mode")
         self.standby = True
         for conn_handle in self._connections:
-            self.ble.gatts_notify(conn_handle, self._state_handle, "Sleep: ON")
+            self.ble.gatts_notify(conn_handle, self._state_handle, (0x1).to_bytes(1, 'little'))
+
         self.stop_virtual_timer(self.data_timer_id)
         self.data_timer_id = None
         self.standby_led_timer_id = self.create_virtual_timer(500, self._toggle_standby_led)
@@ -543,7 +544,7 @@ class SafeHelmet:
             self.standby = False
             print("Exiting standby mode")
             for conn_handle in self._connections:
-                self.ble.gatts_notify(conn_handle, self._state_handle, "Sleep: OFF")
+                self.ble.gatts_notify(conn_handle, self._state_handle, (0x0).to_bytes(1, 'little'))
 
             self._clean_collected_data()
             self._start_data_collection()
