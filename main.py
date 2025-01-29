@@ -126,10 +126,15 @@ class SafeHelmet:
             ubluetooth.FLAG_NOTIFY,
             [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ]
         )
-        self._accel_char = (
+        self._accel_char_1 = (
             self._data_uuid,
             ubluetooth.FLAG_NOTIFY,
-            [(ubluetooth.UUID(0x0043), ubluetooth.FLAG_READ), ]
+            [(ubluetooth.UUID(0x4331), ubluetooth.FLAG_READ), ]
+        )
+        self._accel_char_2 = (
+            self._data_uuid,
+            ubluetooth.FLAG_NOTIFY,
+            [(ubluetooth.UUID(0x4332), ubluetooth.FLAG_READ), ]
         )
         self._feedback_char = (
             self._feedback_uuid,
@@ -143,14 +148,15 @@ class SafeHelmet:
         )
         self._service = (
             self._service_uuid,
-            (self._data_char, self._accel_char, self._feedback_char, self._state_char)
+            (self._data_char, self._accel_char_1, self._accel_char_2, self._feedback_char, self._state_char)
         )
 
         [handles] = self.ble.gatts_register_services([self._service])
         self._data_handle = handles[0]
-        self._accel_handle = handles[2]
-        self._feedback_handle = handles[4]
-        self._state_handle = handles[6]
+        self._accel_handle_1 = handles[2]
+        self._accel_handle_2 = handles[4]
+        self._feedback_handle = handles[6]
+        self._state_handle = handles[8]
 
         self._feedback = None
 
@@ -164,8 +170,8 @@ class SafeHelmet:
         self.light_sensor = BH1750(self.i2c)
         self.mpu = MPU6050(self.i2c)
 
-        self.welding_mask_gpio = Pin(13, Pin.IN, Pin.PULL_UP)
-        self.gas_mask_gpio = Pin(12, Pin.IN, Pin.PULL_UP)
+        self.welding_mask_gpio = Pin(12, Pin.IN, Pin.PULL_UP)
+        self.gas_mask_gpio = Pin(13, Pin.IN, Pin.PULL_UP)
 
         self.vibration_gpio = Pin(14, Pin.OUT, Pin.PULL_UP)
         self.vibration_gpio.value(1)
@@ -174,7 +180,7 @@ class SafeHelmet:
         self._temperature = [0, 0]
         self._humidity = [0, 0]
         self._lux = [0, 0]
-        self._posture = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
+        self._avg_accel = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
         self._magnitudo = []
         self._magnitudo_mean = 0
         self._magnitudo_dev_std = 0
@@ -251,7 +257,7 @@ class SafeHelmet:
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
-        #print("deleting timer {}".format(timer_id))
+        # print("deleting timer {}".format(timer_id))
         to_remove = None
         for i, vt in enumerate(self.virtual_timers):
             if vt["id"] == timer_id:
@@ -318,7 +324,6 @@ class SafeHelmet:
         self.standby_led.value(not self.standby_led.value())
 
     #### DATA COLLECTING METHODS ####
-
 
     def _read_dht(self):
         self.dht_sensor.measure()
@@ -388,12 +393,12 @@ class SafeHelmet:
         accel_data = self.mpu.read_accel_data()
         x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
 
-        self._posture["x"][0] += x
-        self._posture["y"][0] += y
-        self._posture["z"][0] += z
-        self._posture["x"][1] += 1
-        self._posture["y"][1] += 1
-        self._posture["z"][1] += 1
+        self._avg_accel["x"][0] += x
+        self._avg_accel["y"][0] += y
+        self._avg_accel["z"][0] += z
+        self._avg_accel["x"][1] += 1
+        self._avg_accel["y"][1] += 1
+        self._avg_accel["z"][1] += 1
 
         # Verifica se i valori sono fuori dai limiti
         if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
@@ -442,13 +447,13 @@ class SafeHelmet:
         self._lux[0] = 0
         self._lux[1] = 0
 
-        self._posture["x"][0] = 0
-        self._posture["y"][0] = 0
-        self._posture["z"][0] = 0
-        self._posture["x"][1] = 0
-        self._posture["y"][1] = 0
-        self._posture["z"][1] = 0
-        
+        self._avg_accel["x"][0] = 0
+        self._avg_accel["y"][0] = 0
+        self._avg_accel["z"][0] = 0
+        self._avg_accel["x"][1] = 0
+        self._avg_accel["y"][1] = 0
+        self._avg_accel["z"][1] = 0
+
         self.posture_incorrect_time = 0
         self.movement_cumulative = 0
 
@@ -479,18 +484,17 @@ class SafeHelmet:
 
             # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
             sensor_states = 0
-            for i in range(3):  # Tre sensori
-                if random.random() < 0.1:  # 10% di probabilità
-                    sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
+            # for i in range(3):  # Tre sensori
+            #     if random.random() < 0.1:  # 10% di probabilità
+            #         sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
             if sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
-                pass
-                # self.vibration_notify()
+                self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
-            posture_dict = {}
-            for k, v in self._posture.items():
-                posture_dict[k] = v[0] / v[1] if v[1] != 0 else 0
+            avg_accel_dict = {}
+            for k, v in self._avg_accel.items():
+                avg_accel_dict[k] = v[0] / v[1] if v[1] != 0 else 0
 
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
             print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
@@ -510,18 +514,33 @@ class SafeHelmet:
                 "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
                     temperature, humidity, lux, crash_detection, sensor_states, wearables_bitmask))
 
-            accel_payload = struct.pack("fffff",
-                                        posture_dict["x"],
-                                        posture_dict["y"],
-                                        posture_dict["z"],
-                                        crash_detection,
-                                        incorrect_posture_percent_raw
-                                        )
+            avg_g = 0
+            std_g = 0
+            std_x = 0
+            std_y = 0
+            std_z = 0
+
+            accel_payload_1 = struct.pack("fffff",
+                                          avg_accel_dict["x"],
+                                          avg_accel_dict["y"],
+                                          avg_accel_dict["z"],
+                                          avg_g,
+                                          std_g
+                                          )
+
+            accel_payload_2 = struct.pack("fffff",
+                                          std_x,
+                                          std_y,
+                                          std_z,
+                                          crash_detection,
+                                          incorrect_posture_percent_raw
+                                          )
 
             # Invia il payload ai dispositivi connessi
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._data_handle, data_payload)
-                self.ble.gatts_notify(conn_handle, self._accel_handle, accel_payload)
+                self.ble.gatts_notify(conn_handle, self._accel_handle_1, accel_payload_1)
+                self.ble.gatts_notify(conn_handle, self._accel_handle_2, accel_payload_2)
 
             self._feedback = self.ble.gatts_read(self._feedback_handle)
 
