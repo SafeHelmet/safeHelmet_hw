@@ -9,7 +9,6 @@ import ssd1306
 from MPU6050 import MPU6050
 from bh1750 import BH1750
 import dht
-from math import sqrt
 
 '''
 TELE-ESP-BOARD LEDS:
@@ -25,15 +24,14 @@ TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
 
-CRASH_THRESHOLD = 2.0 * 9.81  # Crash detection > 4/5 g
-CRASH_CHECK_INTERVAL = 100  # in ms 200
+CRASH_THRESHOLD = 4.0  # Crash detection > 4/5 g
+CRASH_AND_POSTURE_INTERVAL = 100  # in ms
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
 
 POSTURE_Z_MIN = 4.0  # Z deve essere almeno 7.0 m/s^2
 POSTURE_XY_MAX = 3.0  # X e Y devono essere compresi entro ±3.0 m/s^2
-POSTURE_CHECK_INTERVAL = 1000  # in ms
 
 
 class Display:
@@ -181,15 +179,6 @@ class SafeHelmet:
         self._temperature = [0, 0]
         self._humidity = [0, 0]
         self._lux = [0, 0]
-        #         self._posture = {"x": [0, 0], "y": [0, 0], "z": [0, 0]}
-        #
-        #         self._module_stats = {
-        #             "sum_acc": 0,            		# Somma delle accelerazioni
-        #             "sum_acc_squared": 0,    		# Somma dei quadrati delle accelerazioni
-        #             "count": 0,              		# Numero di campioni
-        #             "crash_flag": False,     		# Flag per il crash
-        #             "current_max": float('-inf')  	# Valore massimo nell'intervallo
-        #         }
 
         self._accel_stats = {"x": [0, 0, 0],  # somma, somma al quadrato, letture
                              "y": [0, 0, 0],
@@ -197,14 +186,13 @@ class SafeHelmet:
                              "m": [0, 0, 0],  # modulo accelerazione
                              "crash_flag": False,
                              "current_max": 0}
-        self.CONTATORE = 0
 
         self.movement_cumulative = 0  # Movimento cumulativo tra due chiamate a send_data()
         self.last_accel = {"x": 0, "y": 0, "z": 0}  # Ultima lettura dell'accelerometro
 
         # Physical and virtual timers init
         self.data_interval = data_interval
-        self.base_interval = 100  # 100ms precision on virtual timers
+        self.base_interval = 100  # ms precision on virtual timers
 
         self.virtual_timers = []
         self.oneshot_timer_removal_list = []
@@ -381,96 +369,19 @@ class SafeHelmet:
         self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
         self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
 
-    #     def _detect_crash(self):
-    #         module = self.mpu.read_accel_abs()
-    #         self._module_stats["count"] += 1
-    #         self._module_stats["sum_acc"] += module
-    #         self._module_stats["sum_acc_squared"] += module ** 2
-    #         if module > CRASH_THRESHOLD:
-    #             print(f"Urto rilevato! Modulo: {module:.1f} m/s2")
-    #             self._module_stats["crash_flag"] = True
-    #         self._module_stats["current_max"] = max(self._module_stats["current_max"], module)
-
-    def _detect_crash(self):
-        module = self.mpu.read_accel_abs()
-        self._accel_stats["m"][0] += module
-        self._accel_stats["m"][1] += module ** 2
-        self._accel_stats["m"][2] += 1
-        if module > CRASH_THRESHOLD:
-            print(f"Urto rilevato! Modulo: {module:.1f} m/s2")
-            self._accel_stats["crash_flag"] = True
-        self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
-
-    #     def _check_posture_movement(self):
-    #         # Leggi i dati dell'accelerometro
-    #         accel_data = self.mpu.read_accel_data()
-    #         x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-    #
-    #         self._posture["x"][0] += x
-    #         self._posture["y"][0] += y
-    #         self._posture["z"][0] += z
-    #         self._posture["x"][1] += 1
-    #         self._posture["y"][1] += 1
-    #         self._posture["z"][1] += 1
-    #
-    #         # Verifica se i valori sono fuori dai limiti
-    #         if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
-    #             self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
-    #
-    #         # Calcola la variazione rispetto alla lettura precedente (movimento)
-    #         delta_x = x - self.last_accel["x"]
-    #         delta_y = y - self.last_accel["y"]
-    #         delta_z = z - self.last_accel["z"]
-    #
-    #         # Aggiungi la variazione cumulativa al movimento totale
-    #         self.movement_cumulative += (delta_x ** 2 + delta_y ** 2 + delta_z ** 2) ** 0.5
-    #
-    #         # Aggiorna l'ultima lettura
-    #         self.last_accel = {"x": x, "y": y, "z": z}
-
-    def _check_posture_movement(self):
-        # Leggi i dati dell'accelerometro
-        accel_data = self.mpu.read_accel_data()
-        x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-
-        self._accel_stats["x"][0] += x
-        self._accel_stats["y"][0] += y
-        self._accel_stats["z"][0] += z
-        self._accel_stats["x"][1] += x ** 2
-        self._accel_stats["y"][1] += y ** 2
-        self._accel_stats["z"][1] += z ** 2
-        self._accel_stats["x"][2] += 1
-        self._accel_stats["y"][2] += 1
-        self._accel_stats["z"][2] += 1
-
-        # Verifica se i valori sono fuori dai limiti
-        if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
-            self.posture_incorrect_time += POSTURE_CHECK_INTERVAL  # Incrementa il tempo scorretto
-
-        # Calcola la variazione rispetto alla lettura precedente (movimento)
-        delta_x = x - self.last_accel["x"]
-        delta_y = y - self.last_accel["y"]
-        delta_z = z - self.last_accel["z"]
-
-        # Aggiungi la variazione cumulativa al movimento totale
-        self.movement_cumulative += (delta_x ** 2 + delta_y ** 2 + delta_z ** 2) ** 0.5
-
-        # Aggiorna l'ultima lettura
-        self.last_accel = {"x": x, "y": y, "z": z}
-
     def _check_crash_and_posture(self):
-        self.CONTATORE += 1
         # Leggi i dati dell'accelerometro
         accel_data = self.mpu.read_accel_data()
         x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-        module = sqrt(x ** 2 + y ** 2 + z ** 2)
+        module = ((
+                              x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in caso di passaggio a m/s2 adattare anche CRASH_THRESHOLD
 
         # Crash detection
         self._accel_stats["m"][0] += module
         self._accel_stats["m"][1] += module ** 2
         self._accel_stats["m"][2] += 1
         if module > CRASH_THRESHOLD:
-            print(f"Urto rilevato! Modulo: {module:.1f} m/s2")
+            print(f"Urto rilevato! Modulo: {module:.2f} g")
             self._accel_stats["crash_flag"] = True
         self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
 
@@ -486,7 +397,7 @@ class SafeHelmet:
 
         # Verifica se i valori sono fuori dai limiti
         if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
-            self.posture_incorrect_time += CRASH_CHECK_INTERVAL  # Incrementa il tempo scorretto
+            self.posture_incorrect_time += CRASH_AND_POSTURE_INTERVAL  # Incrementa il tempo scorretto
 
         # Calcola la variazione rispetto alla lettura precedente (movimento)
         delta_x = x - self.last_accel["x"]
@@ -508,9 +419,7 @@ class SafeHelmet:
         """
         self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        #  self._posture_timer = self.create_virtual_timer(POSTURE_CHECK_INTERVAL, self._check_posture_movement)
-        #  self._crash_detection_timer = self.create_virtual_timer(CRASH_CHECK_INTERVAL, self._detect_crash)
-        self._crash_detection_and_posture_timer = self.create_virtual_timer(CRASH_CHECK_INTERVAL,
+        self._crash_detection_and_posture_timer = self.create_virtual_timer(CRASH_AND_POSTURE_INTERVAL,
                                                                             self._check_crash_and_posture)
 
     def _stop_data_collection(self):
@@ -518,12 +427,8 @@ class SafeHelmet:
         Stop data collection.
         """
         print("data collection stopped")
-        # self.stop_virtual_timer(self._temp_timer)
-        # self.stop_virtual_timer(self._hum_timer)
         self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
-        #  self.stop_virtual_timer(self._posture_timer)
-        #  self.stop_virtual_timer(self._crash_detection_timer)
         self.stop_virtual_timer(self._crash_detection_and_posture_timer)
         self._clean_collected_data()
 
@@ -535,21 +440,8 @@ class SafeHelmet:
         self._lux[0] = 0
         self._lux[1] = 0
 
-        #         self._posture["x"][0] = 0
-        #         self._posture["y"][0] = 0
-        #         self._posture["z"][0] = 0
-        #         self._posture["x"][1] = 0
-        #         self._posture["y"][1] = 0
-        #         self._posture["z"][1] = 0
-
         self.posture_incorrect_time = 0
         self.movement_cumulative = 0
-
-        #         self._module_stats["sum_acc"] = 0
-        #         self._module_stats["sum_acc_squared"] = 0
-        #         self._module_stats["count"] = 0
-        #         self._module_stats["crash_flag"] = False
-        #         self._module_stats["current_max"] = float('-inf')
 
         self._accel_stats["x"][0] = 0
         self._accel_stats["y"][0] = 0
@@ -565,8 +457,6 @@ class SafeHelmet:
         self._accel_stats["m"][2] = 0
         self._accel_stats["crash_flag"] = False
         self._accel_stats["current_max"] = 0
-
-        self.CONTATORE = 0
 
     def _send_data(self):
         if not self._connections:
@@ -599,13 +489,13 @@ class SafeHelmet:
                 if random.random() < 0.1:  # 10% di probabilità
                     sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-            if sensor_states or self._accel_stats["crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+            if sensor_states or self._accel_stats[
+                "crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
             accel_dict = {}
             for k, v in self._accel_stats.items():
-                #  posture_dict[k] = v[0] / v[2] if v[2] != 0 else 0
                 if k not in {"x", "y", "z", "m"}:
                     continue  # Salta le chiavi non desiderate
                 somma = v[0]  # Somma dei valori dell'asse
@@ -626,19 +516,6 @@ class SafeHelmet:
             print("Incorretta: {} - Intervallo: {}".format(self.posture_incorrect_time, self.data_interval * 1000))
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
             print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
-            print(self.CONTATORE)
-            #  crash_detection = 0
-
-            #             if self._module_stats["count"] == 0:
-            #                 print("Nessun dato da inviare.")
-            #             else:
-            #                 # Calcola media e deviazione standard
-            #                 mean_acc = self._module_stats["sum_acc"] / self._module_stats["count"]
-            #                 variance = (self._module_stats["sum_acc_squared"] / self._module_stats["count"]) - (mean_acc ** 2)
-            #                 std_dev = sqrt(variance)
-            #                 # Invia i dati
-            #                 print(f"Media: {mean_acc:.2f}, Deviazione Standard: {std_dev:.2f}, "
-            #                       f"Max: {self._module_stats['current_max']:.2f}, Crash: {self._module_stats['crash_flag']}")
 
             # Crea il payload
             data_payload = struct.pack("ffffBB",
@@ -731,3 +608,4 @@ try:
 except KeyboardInterrupt:
     ble_sensor.base_timer.deinit()
     print("Manually stopped")
+
