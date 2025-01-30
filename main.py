@@ -399,7 +399,7 @@ class SafeHelmet:
         if module > CRASH_THRESHOLD:
             print(f"Urto rilevato! Modulo: {module:.1f} m/s2")
             self._accel_stats["crash_flag"] = True
-        self._acccel_stats["current_max"] = max(self._accel_stats["current_max"], module)
+        self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
 
     #     def _check_posture_movement(self):
     #         # Leggi i dati dell'accelerometro
@@ -599,8 +599,7 @@ class SafeHelmet:
                 if random.random() < 0.1:  # 10% di probabilità
                     sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-            if sensor_states or self._accel_stats[
-                "crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+            if sensor_states or self._accel_stats["crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
@@ -626,7 +625,6 @@ class SafeHelmet:
 
             print("Incorretta: {} - Intervallo: {}".format(self.posture_incorrect_time, self.data_interval * 1000))
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
-            #  incorrect_posture_percent_raw = min(1.0, max(0.0, self.posture_incorrect_time / (self.data_interval * 1000)))
             print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
             print(self.CONTATORE)
             #  crash_detection = 0
@@ -655,25 +653,19 @@ class SafeHelmet:
                 "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
                     temperature, humidity, lux, self._accel_stats["crash_flag"], sensor_states, wearables_bitmask))
 
-            avg_g = 0
-            std_g = 0
-            std_x = 0
-            std_y = 0
-            std_z = 0
-
             accel_payload_1 = struct.pack("fffff",
-                                          avg_accel_dict["x"],
-                                          avg_accel_dict["y"],
-                                          avg_accel_dict["z"],
-                                          avg_g,
-                                          std_g
+                                          accel_dict["x"]["media"],
+                                          accel_dict["y"]["media"],
+                                          accel_dict["z"]["media"],
+                                          accel_dict["m"]["media"],
+                                          accel_dict["m"]["dev_std"]
                                           )
 
             accel_payload_2 = struct.pack("fffff",
-                                          std_x,
-                                          std_y,
-                                          std_z,
-                                          crash_detection,
+                                          accel_dict["x"]["dev_std"],
+                                          accel_dict["y"]["dev_std"],
+                                          accel_dict["z"]["dev_std"],
+                                          self._accel_stats["current_max"],
                                           incorrect_posture_percent_raw
                                           )
 
@@ -692,7 +684,7 @@ class SafeHelmet:
                 self.display.write_text("Temp.: {:.1f}C".format(temperature))
                 self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=10)
                 self.display.write_text("Lux.: {:.1f}".format(lux), clear=False, y=20)
-                self.display.write_text("Crash: {:.2f} g".format(crash_detection), clear=False, y=30)
+                self.display.write_text("Crash: {:.2f} g".format(self._accel_stats["current_max"]), clear=False, y=30)
                 self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=40)
 
             self.send_led.value(0)
