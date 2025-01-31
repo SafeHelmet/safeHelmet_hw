@@ -1,6 +1,5 @@
 import random
 import struct
-
 import ubluetooth
 import ubinascii
 from machine import Timer, Pin, I2C
@@ -373,27 +372,24 @@ class SafeHelmet:
         # Leggi i dati dell'accelerometro
         accel_data = self.mpu.read_accel_data()
         x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-        module = ((
-                              x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in caso di passaggio a m/s2 adattare anche CRASH_THRESHOLD
+        module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # se si passa a m/s2, adattare anche CRASH_THRESHOLD
 
         # Crash detection
-        self._accel_stats["m"][0] += module
-        self._accel_stats["m"][1] += module ** 2
-        self._accel_stats["m"][2] += 1
+        self._accel_stats["m"] = [
+            self._accel_stats["m"][0] + module,
+            self._accel_stats["m"][1] + module ** 2,
+            self._accel_stats["m"][2] + 1
+        ]
+
         if module > CRASH_THRESHOLD:
             print(f"Urto rilevato! Modulo: {module:.2f} g")
             self._accel_stats["crash_flag"] = True
         self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
 
-        self._accel_stats["x"][0] += x
-        self._accel_stats["y"][0] += y
-        self._accel_stats["z"][0] += z
-        self._accel_stats["x"][1] += x ** 2
-        self._accel_stats["y"][1] += y ** 2
-        self._accel_stats["z"][1] += z ** 2
-        self._accel_stats["x"][2] += 1
-        self._accel_stats["y"][2] += 1
-        self._accel_stats["z"][2] += 1
+        for axis, value in zip(["x", "y", "z"], [x, y, z]):
+            self._accel_stats[axis][0] += value
+            self._accel_stats[axis][1] += value ** 2
+            self._accel_stats[axis][2] += 1
 
         # Verifica se i valori sono fuori dai limiti
         if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
@@ -419,8 +415,7 @@ class SafeHelmet:
         """
         self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
         self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
-        self._crash_detection_and_posture_timer = self.create_virtual_timer(CRASH_AND_POSTURE_INTERVAL,
-                                                                            self._check_crash_and_posture)
+        self._crash_detection_and_posture_timer = self.create_virtual_timer(CRASH_AND_POSTURE_INTERVAL, self._check_crash_and_posture)
 
     def _stop_data_collection(self):
         """
@@ -433,30 +428,15 @@ class SafeHelmet:
         self._clean_collected_data()
 
     def _clean_collected_data(self):
-        self._temperature[0] = 0
-        self._temperature[1] = 0
-        self._humidity[0] = 0
-        self._humidity[1] = 0
-        self._lux[0] = 0
-        self._lux[1] = 0
+        for key in ["_temperature", "_humidity", "_lux"]:
+            setattr(self, key, [0, 0])
 
         self.posture_incorrect_time = 0
         self.movement_cumulative = 0
 
-        self._accel_stats["x"][0] = 0
-        self._accel_stats["y"][0] = 0
-        self._accel_stats["z"][0] = 0
-        self._accel_stats["m"][0] = 0
-        self._accel_stats["x"][1] = 0
-        self._accel_stats["y"][1] = 0
-        self._accel_stats["z"][1] = 0
-        self._accel_stats["m"][1] = 0
-        self._accel_stats["x"][2] = 0
-        self._accel_stats["y"][2] = 0
-        self._accel_stats["z"][2] = 0
-        self._accel_stats["m"][2] = 0
-        self._accel_stats["crash_flag"] = False
-        self._accel_stats["current_max"] = 0
+        self._accel_stats = {"crash_flag": False, "current_max": 0}
+        for key in ["x", "y", "z", "m"]:
+            self._accel_stats[key] = [0, 0, 0]
 
     def _send_data(self):
         if not self._connections:
@@ -489,33 +469,30 @@ class SafeHelmet:
                 if random.random() < 0.1:  # 10% di probabilità
                     sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-            if sensor_states or self._accel_stats[
-                "crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+            if sensor_states or self._accel_stats["crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
-            accel_dict = {}
-            for k, v in self._accel_stats.items():
-                if k not in {"x", "y", "z", "m"}:
-                    continue  # Salta le chiavi non desiderate
-                somma = v[0]  # Somma dei valori dell'asse
-                somma_quadrati = v[1]  # Somma dei quadrati dei valori
-                count = v[2]  # Numero di valori
-                media = somma / count if count != 0 else 0
-                varianza = (somma_quadrati / count) - (media ** 2) if count != 0 else 0
-                deviazione_standard = varianza ** 0.5  # Radice quadrata della varianza
-
-                accel_dict[k] = {
-                    "media": media,
-                    "dev_std": deviazione_standard
+            accel_dict = {
+                k: {
+                    "media": (media := v[0] / v[2]) if v[2] else 0,
+                    "dev_std": ((v[1] / v[2]) - media ** 2) ** 0.5 if v[2] else 0
                 }
+                for k, v in self._accel_stats.items()
+                if k in {"x", "y", "z", "m"}
+            }
 
-                print(f"Tipo: {k}, Media: {media:.2f}, Deviazione Standard: {deviazione_standard:.2f}, "
-                      f"Max: {self._accel_stats['current_max']:.2f}, Crash: {self._accel_stats['crash_flag']}")
+            # Debug
+            print()
+            for k, v in accel_dict.items():
+                if k is not "m":
+                    print(f"Asse: {k}, Media: {v['media']:.2f} m/s2, DevStd: {v['dev_std']:.2f} m/s2")
+                else:
+                    print(f"Magnitudo, Media: {v['media']:.2f} g, DevStd: {v['dev_std']:.2f} g")
+            print(f"Max: {self._accel_stats['current_max']:.2f} g, Crash: {self._accel_stats['crash_flag']}")
 
-            print("Incorretta: {} - Intervallo: {}".format(self.posture_incorrect_time, self.data_interval * 1000))
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
-            print("perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
+            print("Perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
 
             # Crea il payload
             data_payload = struct.pack("ffffBB",
@@ -526,8 +503,7 @@ class SafeHelmet:
                                        wearables_bitmask
                                        )
 
-            print(
-                "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
+            print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
                     temperature, humidity, lux, self._accel_stats["crash_flag"], sensor_states, wearables_bitmask))
 
             accel_payload_1 = struct.pack("fffff",
@@ -608,4 +584,3 @@ try:
 except KeyboardInterrupt:
     ble_sensor.base_timer.deinit()
     print("Manually stopped")
-
