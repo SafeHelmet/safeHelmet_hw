@@ -23,7 +23,6 @@ TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
 HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
 LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
 
-CRASH_THRESHOLD = 4.0  # Crash detection > 4/5 g
 CRASH_AND_POSTURE_INTERVAL = 100  # in ms
 
 STANDBY_TRESHOLD = -2.0
@@ -183,7 +182,6 @@ class SafeHelmet:
                              "y": [0, 0, 0],
                              "z": [0, 0, 0],
                              "m": [0, 0, 0],  # modulo accelerazione
-                             "crash_flag": False,
                              "current_max": 0}
 
         self.movement_cumulative = 0  # Movimento cumulativo tra due chiamate a send_data()
@@ -381,9 +379,6 @@ class SafeHelmet:
             self._accel_stats["m"][2] + 1
         ]
 
-        if module > CRASH_THRESHOLD:
-            print(f"Urto rilevato! Modulo: {module:.2f} g")
-            self._accel_stats["crash_flag"] = True
         self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
 
         for axis, value in zip(["x", "y", "z"], [x, y, z]):
@@ -434,7 +429,7 @@ class SafeHelmet:
         self.posture_incorrect_time = 0
         self.movement_cumulative = 0
 
-        self._accel_stats = {"crash_flag": False, "current_max": 0}
+        self._accel_stats = {"current_max": 0}
         for key in ["x", "y", "z", "m"]:
             self._accel_stats[key] = [0, 0, 0]
 
@@ -469,7 +464,7 @@ class SafeHelmet:
                 if random.random() < 0.1:  # 10% di probabilità
                     sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-            if sensor_states or self._accel_stats["crash_flag"]:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+            if sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
@@ -489,7 +484,6 @@ class SafeHelmet:
                     print(f"Asse: {k}, Media: {v['media']:.2f} m/s2, DevStd: {v['dev_std']:.2f} m/s2")
                 else:
                     print(f"Magnitudo, Media: {v['media']:.2f} g, DevStd: {v['dev_std']:.2f} g")
-            print(f"Max: {self._accel_stats['current_max']:.2f} g, Crash: {self._accel_stats['crash_flag']}")
 
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
             print("Perc. tempo passato in postura scorretta: {}%".format(incorrect_posture_percent_raw * 100))
@@ -504,7 +498,7 @@ class SafeHelmet:
                                        )
 
             print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
-                    temperature, humidity, lux, self._accel_stats["crash_flag"], sensor_states, wearables_bitmask))
+                    temperature, humidity, lux, self._accel_stats["current_max"], sensor_states, wearables_bitmask))
 
             accel_payload_1 = struct.pack("fffff",
                                           accel_dict["x"]["media"],
