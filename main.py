@@ -114,8 +114,10 @@ class SafeHelmet:
 
         # Convert string UUIDs to ubluetooth.UUID objects
         self._service_uuid = ubluetooth.UUID(uuids['service'])
+        self._crash1_uuid = ubluetooth.UUID(uuids['crash1'])
+        self._crash2_uuid = ubluetooth.UUID(uuids['crash2'])
         self._data_uuid = ubluetooth.UUID(uuids['data'])
-        self._state_uuid = ubluetooth.UUID(uuids['state'])
+        self._standby_uuid = ubluetooth.UUID(uuids['standby'])
         self._feedback_uuid = ubluetooth.UUID(uuids['feedback'])
 
         self._data_char = (
@@ -124,12 +126,12 @@ class SafeHelmet:
             [(ubluetooth.UUID(0x0044), ubluetooth.FLAG_READ), ]
         )
         self._accel_char_1 = (
-            self._data_uuid,
+            self._crash1_uuid,
             ubluetooth.FLAG_NOTIFY,
             [(ubluetooth.UUID(0x4331), ubluetooth.FLAG_READ), ]
         )
         self._accel_char_2 = (
-            self._data_uuid,
+            self._crash2_uuid,
             ubluetooth.FLAG_NOTIFY,
             [(ubluetooth.UUID(0x4332), ubluetooth.FLAG_READ), ]
         )
@@ -139,7 +141,7 @@ class SafeHelmet:
             [(ubluetooth.UUID(0x0046), ubluetooth.FLAG_READ), ]
         )
         self._state_char = (
-            self._state_uuid,
+            self._standby_uuid,
             ubluetooth.FLAG_NOTIFY,
             [(ubluetooth.UUID(0x0053), ubluetooth.FLAG_READ), ]
         )
@@ -226,10 +228,12 @@ class SafeHelmet:
             return (f"{uuid_base[:8]}-58cc-4372-a567-{uuid_base[8:20]}")
 
         return {
-            'service': create_uuid('1'),  # Service UUID
-            'data': create_uuid('2'),  # Data characteristic UUID
-            'state': create_uuid('3'),  # State characteristic UUID
-            'feedback': create_uuid('4')  # Command characteristic UUID
+            'data': create_uuid('1'),  # Service UUID
+            'crash1': create_uuid('2'),  # Data characteristic UUID
+            'crash2': create_uuid('3'),  # State characteristic UUID
+            'feedback': create_uuid('4'),  # Command characteristic UUID
+            'standby': create_uuid('5'),
+            'service': create_uuid('6')
         }
 
     def _virtual_timer_callback(self, timer):
