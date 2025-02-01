@@ -228,12 +228,12 @@ class SafeHelmet:
             return (f"{uuid_base[:8]}-58cc-4372-a567-{uuid_base[8:20]}")
 
         return {
-            'data': create_uuid('1'),  # Service UUID
-            'crash1': create_uuid('2'),  # Data characteristic UUID
-            'crash2': create_uuid('3'),  # State characteristic UUID
-            'feedback': create_uuid('4'),  # Command characteristic UUID
-            'standby': create_uuid('5'),
-            'service': create_uuid('6')
+            'data': create_uuid('1'),  # Data characteristic UUID
+            'crash1': create_uuid('2'),  # Crash characteristic UUID
+            'crash2': create_uuid('3'),  # Crash characteristic UUID
+            'feedback': create_uuid('4'),  # Feedback characteristic UUID
+            'standby': create_uuid('5'),  # Standby characteristic UUID
+            'service': create_uuid('6')  # Service UUID
         }
 
     def _virtual_timer_callback(self, timer):
@@ -374,7 +374,7 @@ class SafeHelmet:
         # Leggi i dati dell'accelerometro
         accel_data = self.mpu.read_accel_data()
         x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-        module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # se si passa a m/s2, adattare anche CRASH_THRESHOLD
+        module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in g
 
         # Crash detection
         self._accel_stats["m"] = [
