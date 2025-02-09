@@ -1,4 +1,4 @@
-import random
+# import random
 import struct
 import ubluetooth
 import ubinascii
@@ -8,6 +8,7 @@ import ssd1306
 from MPU6050 import MPU6050
 from bh1750 import BH1750
 import dht
+import time
 
 '''
 TELE-ESP-BOARD LEDS:
@@ -19,17 +20,37 @@ TELE-ESP-BOARD LEDS:
 # Set this to enable/disable ssd1306 display functionality
 DISPLAY = 0
 
-TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
-HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
-LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
+#  TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
+#  HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
+#  LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
 
+BASE_INTERVAL = 100
+ADV_LED_TIMER = 500
+DHT_INTERVAL = 2000
+LUX_INTERVAL = 2000
 CRASH_AND_POSTURE_INTERVAL = 100  # in ms
+GAS_INTERVAL = 1000  # in ms
+START_TIME = time.ticks_ms()
+GAS_WARMUP_TIME = 120000  # 2 minuti di riscaldamento
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
 
 POSTURE_Z_MIN = 4.0  # Z deve essere almeno 7.0 m/s^2
 POSTURE_XY_MAX = 3.0  # X e Y devono essere compresi entro ±3.0 m/s^2
+
+PIN_DHT = 5
+PIN_MQ2 = 18
+PIN_MQ4 = 19
+PIN_MQ7 = 23
+PIN_WELDING_MASK = 15
+PIN_GAS_MASK = 2  # DA MODIFICARE
+PIN_STANDBY_LED = 2
+PIN_SEND_LED = 4
+PIN_ADV_LED = 17
+PIN_ANOMALY_LED = 16
+PIN_SCL = 22
+PIN_SDA = 21
 
 
 class Display:
@@ -86,17 +107,20 @@ class SafeHelmet:
 
         print("\nInitializing SafeHelmet...")
         # I2C init
-        self.i2c = I2C(1, scl=Pin(22), sda=Pin(21), freq=100000)
+        self.i2c = I2C(1, scl=Pin(PIN_SCL), sda=Pin(PIN_SDA), freq=100000)
 
         # LED init
-        self.standby_led = Pin(2, Pin.OUT)
+        self.standby_led = Pin(PIN_STANDBY_LED, Pin.OUT)
         self.standby_led.value(0)
 
-        self.send_led = Pin(4, Pin.OUT)
+        self.send_led = Pin(PIN_SEND_LED, Pin.OUT)
         self.send_led.value(0)
 
-        self.adv_led = Pin(25, Pin.OUT)
+        self.adv_led = Pin(PIN_ADV_LED, Pin.OUT)
         self.adv_led.value(0)
+
+        self.anomaly_led = Pin(PIN_ANOMALY_LED, Pin.OUT)
+        self.anomaly_led.value(0)
 
         # BLE init and service/characteristics setup
         self.ble = ubluetooth.BLE()
@@ -163,17 +187,21 @@ class SafeHelmet:
         self.standby = False
         self.posture_incorrect_time = 0  # Tempo accumulato in postura scorretta (in ms)
         self.posture_last_checked = 0  # Timestamp dell'ultima verifica
+        self.gas_anomaly = 0b000
 
-        self.dht_sensor = dht.DHT11(Pin(18))
+        self.dht_sensor = dht.DHT11(Pin(PIN_DHT))
+        self.mq2 = Pin(PIN_MQ2, Pin.IN)
+        self.mq4 = Pin(PIN_MQ4, Pin.IN)
+        self.mq7 = Pin(PIN_MQ7, Pin.IN)
         self.display = Display(self.i2c)
         self.light_sensor = BH1750(self.i2c)
         self.mpu = MPU6050(self.i2c)
 
-        self.welding_mask_gpio = Pin(12, Pin.IN, Pin.PULL_UP)
-        self.gas_mask_gpio = Pin(13, Pin.IN, Pin.PULL_UP)
+        self.welding_mask_gpio = Pin(PIN_WELDING_MASK, Pin.IN, Pin.PULL_UP)
+        self.gas_mask_gpio = Pin(PIN_GAS_MASK, Pin.IN, Pin.PULL_UP)
 
-        self.vibration_gpio = Pin(14, Pin.OUT, Pin.PULL_UP)
-        self.vibration_gpio.value(1)
+        # self.vibration_gpio = Pin(14, Pin.OUT, Pin.PULL_UP)
+        # self.vibration_gpio.value(1)
 
         # First value is total sum of readings, second value is number of readings
         self._temperature = [0, 0]
@@ -191,7 +219,7 @@ class SafeHelmet:
 
         # Physical and virtual timers init
         self.data_interval = data_interval
-        self.base_interval = 100  # ms precision on virtual timers
+        self.base_interval = BASE_INTERVAL  # ms precision on virtual timers
 
         self.virtual_timers = []
         self.oneshot_timer_removal_list = []
@@ -203,7 +231,7 @@ class SafeHelmet:
         self._dht_timer = None
 
         self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
-        self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)
+        self.adv_led_timer_id = self.create_virtual_timer(ADV_LED_TIMER, self._toggle_adv_led)
 
         self.base_timer = Timer(-1)
         self.base_timer.init(period=self.base_interval, mode=Timer.PERIODIC, callback=self._virtual_timer_callback)
@@ -293,7 +321,7 @@ class SafeHelmet:
             self._connections.remove(conn_handle)
             print("Device disconnected")
             self._start_advertising()
-            self.adv_led_timer_id = self.create_virtual_timer(500, self._toggle_adv_led)  # restart the timer
+            self.adv_led_timer_id = self.create_virtual_timer(ADV_LED_TIMER, self._toggle_adv_led)  # restart the timer
             if not self.standby:
                 self._stop_data_collection()
             else:
@@ -325,6 +353,9 @@ class SafeHelmet:
     def _toggle_standby_led(self):
         self.standby_led.value(not self.standby_led.value())
 
+    def _toggle_anomaly_led(self):
+        self.anomaly_led.value(not self.anomaly_led.value())
+
     #### DATA COLLECTING METHODS ####
 
     def _read_dht(self):
@@ -334,12 +365,31 @@ class SafeHelmet:
             self._temperature[1] += 1
             self._humidity[0] += self.dht_sensor.humidity()
             self._humidity[1] += 1
-        except OSError as e:
-            print(f"Errore nella lettura del dht11: {e}")
+        except Exception as e:
+            print(f"Errore nella lettura del sensore dht11: {e}")
 
     def _read_lux(self):
-        self._lux[0] += self.light_sensor.luminance()
-        self._lux[1] += 1
+        try:
+            self._lux[0] += self.light_sensor.luminance()
+            self._lux[1] += 1
+        except Exception as e:
+            print(f"Errore nella lettura del sensore bh1750: {e}")
+
+    def _read_gas(self):
+        try:
+            if time.ticks_diff(time.ticks_ms(), START_TIME) < GAS_WARMUP_TIME:
+                return
+            if not self.mq2.value():  # MQ2 rileva gas
+                self.gas_anomaly |= (1 << 2)  # Imposta il bit più significativo (bit 2)
+
+            if not self.mq4.value():  # MQ4 rileva gas
+                self.gas_anomaly |= (1 << 1)  # Imposta il bit intermedio (bit 1)
+
+            if not self.mq7.value():  # MQ7 rileva gas
+                self.gas_anomaly |= (1 << 0)  # Imposta il bit meno significativo (bit 0)
+        except Exception as e:
+            self.gas_anomaly = 0b000
+            print(f"Errore nella lettura dei sensori MQ: {e}")
 
     def _get_orientation(self) -> float:
         return self.mpu.read_accel_data()['z']
@@ -364,46 +414,77 @@ class SafeHelmet:
         self.create_virtual_timer(1000, lambda: self.vibrate(500), one_shot=True)
         self.create_virtual_timer(2000, lambda: self.vibrate(500), one_shot=True)
 
-    def vibration_anomaly(self):
-        self.vibrate(1000)
-        self.create_virtual_timer(2000, lambda: self.vibrate(1000), one_shot=True)
-        self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
-        self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
+    #     def vibration_anomaly(self):
+    #         self.vibrate(1000)
+    #         self.create_virtual_timer(2000, lambda: self.vibrate(1000), one_shot=True)
+    #         self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
+    #         self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
+
+    def led_vibrate(self, duration_ms):
+        """
+        Activates the LED for the specified duration in milliseconds to simulate vibration.
+        """
+        print("LED on (simulating vibration)")
+        self._toggle_anomaly_led()  # Turn on LED to simulate vibration
+        self.create_virtual_timer(duration_ms, self._led_stop, one_shot=True)
+
+    def _led_stop(self):
+        """
+        Callback function to turn off the LED after its duration.
+        """
+        print("LED off (stop simulating vibration)")
+        self._toggle_anomaly_led()  # Turn off LED
+
+    def led_notify(self):
+        """
+        Notifies with a series of LED flashes to simulate vibration notification.
+        """
+        # LED on for 500ms
+        self.led_vibrate(500)
+
+        # Create timer to turn on LED after 1 second (1000ms)
+        self.create_virtual_timer(1000, lambda: self.led_vibrate(500), one_shot=True)
+
+        # Create timer to turn on LED after 2 seconds (2000ms)
+        self.create_virtual_timer(2000, lambda: self.led_vibrate(500), one_shot=True)
 
     def _check_crash_and_posture(self):
-        # Leggi i dati dell'accelerometro
-        accel_data = self.mpu.read_accel_data()
-        x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-        module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in g
+        try:
+            # Leggi i dati dell'accelerometro
+            accel_data = self.mpu.read_accel_data()
+            x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
+            module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in g
 
-        # Crash detection
-        self._accel_stats["m"] = [
-            self._accel_stats["m"][0] + module,
-            self._accel_stats["m"][1] + module ** 2,
-            self._accel_stats["m"][2] + 1
-        ]
+            # Crash detection
+            self._accel_stats["m"] = [
+                self._accel_stats["m"][0] + module,
+                self._accel_stats["m"][1] + module ** 2,
+                self._accel_stats["m"][2] + 1
+            ]
 
-        self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
+            self._accel_stats["current_max"] = max(self._accel_stats["current_max"], module)
 
-        for axis, value in zip(["x", "y", "z"], [x, y, z]):
-            self._accel_stats[axis][0] += value
-            self._accel_stats[axis][1] += value ** 2
-            self._accel_stats[axis][2] += 1
+            for axis, value in zip(["x", "y", "z"], [x, y, z]):
+                self._accel_stats[axis][0] += value
+                self._accel_stats[axis][1] += value ** 2
+                self._accel_stats[axis][2] += 1
 
-        # Verifica se i valori sono fuori dai limiti
-        if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
-            self.posture_incorrect_time += CRASH_AND_POSTURE_INTERVAL  # Incrementa il tempo scorretto
+            # Verifica se i valori sono fuori dai limiti
+            if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
+                self.posture_incorrect_time += CRASH_AND_POSTURE_INTERVAL  # Incrementa il tempo scorretto
 
-        # Calcola la variazione rispetto alla lettura precedente (movimento)
-        delta_x = x - self.last_accel["x"]
-        delta_y = y - self.last_accel["y"]
-        delta_z = z - self.last_accel["z"]
+            # Calcola la variazione rispetto alla lettura precedente (movimento)
+            delta_x = x - self.last_accel["x"]
+            delta_y = y - self.last_accel["y"]
+            delta_z = z - self.last_accel["z"]
 
-        # Aggiungi la variazione cumulativa al movimento totale
-        self.movement_cumulative += (delta_x ** 2 + delta_y ** 2 + delta_z ** 2) ** 0.5
+            # Aggiungi la variazione cumulativa al movimento totale
+            self.movement_cumulative += (delta_x ** 2 + delta_y ** 2 + delta_z ** 2) ** 0.5
 
-        # Aggiorna l'ultima lettura
-        self.last_accel = {"x": x, "y": y, "z": z}
+            # Aggiorna l'ultima lettura
+            self.last_accel = {"x": x, "y": y, "z": z}
+        except Exception as e:
+            print(f"Errore nella lettura del sensore mpu6050: {e}")
 
     def _start_data_collection(self):
         """
@@ -412,8 +493,9 @@ class SafeHelmet:
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
         between one send and another.
         """
-        self._dht_timer = self.create_virtual_timer(2000, self._read_dht)
-        self._lux_timer = self.create_virtual_timer(2000, self._read_lux)
+        self._dht_timer = self.create_virtual_timer(DHT_INTERVAL, self._read_dht)
+        self._lux_timer = self.create_virtual_timer(LUX_INTERVAL, self._read_lux)
+        self._gas_timer = self.create_virtual_timer(GAS_INTERVAL, self._read_gas)
         self._crash_detection_and_posture_timer = self.create_virtual_timer(CRASH_AND_POSTURE_INTERVAL, self._check_crash_and_posture)
 
     def _stop_data_collection(self):
@@ -423,6 +505,7 @@ class SafeHelmet:
         print("data collection stopped")
         self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
+        self.stop_virtual_timer(self._gas_timer)
         self.stop_virtual_timer(self._crash_detection_and_posture_timer)
         self._clean_collected_data()
 
@@ -436,6 +519,8 @@ class SafeHelmet:
         self._accel_stats = {"current_max": 0}
         for key in ["x", "y", "z", "m"]:
             self._accel_stats[key] = [0, 0, 0]
+
+        self.gas_anomaly = 0b000
 
     def _send_data(self):
         if not self._connections:
@@ -463,13 +548,13 @@ class SafeHelmet:
             lux = calculate_mean(self._lux)
 
             # Simula lo stato dei sensori di gas con probabilità del 10% di valore "1" per ciascun bit
-            sensor_states = 0
-            for i in range(3):  # Tre sensori
-                if random.random() < 0.1:  # 10% di probabilità
-                    sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
+            # sensor_states = 0
+            # for i in range(3):  # Tre sensori
+            #     if random.random() < 0.1:  # 10% di probabilità
+            #         sensor_states |= (1 << i)  # Imposta il bit i-esimo a 1
 
-            if sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
-                self.vibration_notify()
+            if self.gas_anomaly:  # sensor_states:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
+                self.led_notify()  # self.vibration_notify()
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
             accel_dict = {
@@ -497,12 +582,12 @@ class SafeHelmet:
                                        temperature,
                                        humidity,
                                        lux,
-                                       sensor_states,
+                                       self.gas_anomaly,  # sensor_states,
                                        wearables_bitmask
                                        )
 
             print("Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
-                    temperature, humidity, lux, self._accel_stats["current_max"], sensor_states, wearables_bitmask))
+                    temperature, humidity, lux, self._accel_stats["current_max"], self.gas_anomaly, wearables_bitmask))
 
             accel_payload_1 = struct.pack("fffff",
                                           accel_dict["x"]["media"],
@@ -536,7 +621,7 @@ class SafeHelmet:
                 self.display.write_text("Hum.: {:.1f} hPa".format(humidity), clear=False, y=10)
                 self.display.write_text("Lux.: {:.1f}".format(lux), clear=False, y=20)
                 self.display.write_text("Crash: {:.2f} g".format(self._accel_stats["current_max"]), clear=False, y=30)
-                self.display.write_text("Sensors: {:03b}".format(sensor_states), clear=False, y=40)
+                self.display.write_text("Sensors: {:03b}".format(self.gas_anomaly), clear=False, y=40)
 
             self.send_led.value(0)
 
