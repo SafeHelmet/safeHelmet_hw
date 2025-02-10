@@ -229,6 +229,8 @@ class SafeHelmet:
         self._dht_timer = None
         self._gas_timer = None
 
+        self._sensor_preheating_start()
+
         self.adv_led_timer_id = self.create_virtual_timer(ADV_LED_TIMER, self._toggle_adv_led)
 
         self.base_timer = Timer(-1)
@@ -370,26 +372,26 @@ class SafeHelmet:
         except Exception as e:
             print(f"Errore nella lettura del sensore bh1750: {e}")
 
+    def _set_preheated(self):
+        self.are_preheated = True
+
     def _sensor_preheating_start(self):
-        if self.are_preheated and self._gas_timer is None:
-            self._gas_timer = self.create_virtual_timer(GAS_INTERVAL, self._read_gas)
-        else:
-            self.are_preheated = True
-            self.create_virtual_timer(GAS_WARMUP_TIME, self._sensor_preheating_start, one_shot=True)
+        self.create_virtual_timer(GAS_WARMUP_TIME, self._set_preheated, one_shot=True)
 
     def _read_gas(self):
-        try:
-            if not self.mq2.value():  # MQ2 rileva gas
-                self.gas_anomaly |= (1 << 2)  # Imposta il bit più significativo (bit 2)
+        if self.are_preheated:
+            try:
+                if not self.mq2.value():  # MQ2 rileva gas
+                    self.gas_anomaly |= (1 << 2)  # Imposta il bit più significativo (bit 2)
 
-            if not self.mq4.value():  # MQ4 rileva gas
-                self.gas_anomaly |= (1 << 1)  # Imposta il bit intermedio (bit 1)
+                if not self.mq4.value():  # MQ4 rileva gas
+                    self.gas_anomaly |= (1 << 1)  # Imposta il bit intermedio (bit 1)
 
-            if not self.mq7.value():  # MQ7 rileva gas
-                self.gas_anomaly |= (1 << 0)  # Imposta il bit meno significativo (bit 0)
-        except Exception as e:
-            self.gas_anomaly = 0b000
-            print(f"Errore nella lettura dei sensori MQ: {e}")
+                if not self.mq7.value():  # MQ7 rileva gas
+                    self.gas_anomaly |= (1 << 0)  # Imposta il bit meno significativo (bit 0)
+            except Exception as e:
+                self.gas_anomaly = 0b000
+                print(f"Errore nella lettura dei sensori MQ: {e}")
 
     def _get_orientation(self) -> float:
         return self.mpu.read_accel_data()['z']
@@ -413,12 +415,6 @@ class SafeHelmet:
         self.vibrate(500)
         self.create_virtual_timer(1000, lambda: self.vibrate(500), one_shot=True)
         self.create_virtual_timer(2000, lambda: self.vibrate(500), one_shot=True)
-
-    #     def vibration_anomaly(self):
-    #         self.vibrate(1000)
-    #         self.create_virtual_timer(2000, lambda: self.vibrate(1000), one_shot=True)
-    #         self.create_virtual_timer(4000, lambda: self.vibrate(1000), one_shot=True)
-    #         self.create_virtual_timer(6000, lambda: self.vibrate(1000), one_shot=True)
 
     def _check_crash_and_posture(self):
         try:
@@ -468,9 +464,8 @@ class SafeHelmet:
 
         self._dht_timer = self.create_virtual_timer(DHT_INTERVAL, self._read_dht)
         self._lux_timer = self.create_virtual_timer(LUX_INTERVAL, self._read_lux)
-        self._sensor_preheating_start()
+        self._gas_timer = self.create_virtual_timer(GAS_INTERVAL, self._read_gas)
         self._crash_detection_and_posture_timer = self.create_virtual_timer(CRASH_AND_POSTURE_INTERVAL, self._check_crash_and_posture)
-
 
     def _stop_data_collection(self):
         """
@@ -480,8 +475,7 @@ class SafeHelmet:
         self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
         self.stop_virtual_timer(self._crash_detection_and_posture_timer)
-        if self.are_preheated:
-            self.stop_virtual_timer(self._gas_timer)
+        self.stop_virtual_timer(self._gas_timer)
         self._clean_collected_data()
 
     def _clean_collected_data(self):
