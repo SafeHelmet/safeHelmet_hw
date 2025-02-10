@@ -28,7 +28,7 @@ LUX_INTERVAL = 2000
 CRASH_AND_POSTURE_INTERVAL = 100  # in ms
 GAS_INTERVAL = 1000  # in ms
 
-GAS_WARMUP_TIME = 120000  # 2 minuti di riscaldamento
+GAS_WARMUP_TIME = 20000  # 2 minuti di riscaldamento
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
@@ -167,6 +167,7 @@ class SafeHelmet:
         self.base_interval = BASE_INTERVAL  # ms precision on virtual timers
 
         self.virtual_timers = []
+        self.timer_id_incremental = 0
         self.oneshot_timer_removal_list = []
         self.adv_led_timer_id = None  # store the id of the adv led timer
         self.data_timer_id = None  # store the id of the data timer
@@ -211,24 +212,9 @@ class SafeHelmet:
             'service': create_uuid('6')  # Service UUID
         }
 
-    def _virtual_timer_callback(self, timer):
-        for vt in self.virtual_timers:
-            vt["counter"] += self.base_interval
-            if vt["counter"] >= vt["period"]:
-                vt["callback"]()
-                # print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
-                if vt["one_shot"]:
-                    self.oneshot_timer_removal_list.append(vt)
-                else:
-                    vt["counter"] = 0
-
-        for vt in self.oneshot_timer_removal_list:
-            self.virtual_timers.remove(vt)
-        self.oneshot_timer_removal_list.clear()
-
     def create_virtual_timer(self, period, callback, one_shot=False):
-        timer_id = len(self.virtual_timers)  # assign an id equal to the index in the list
-        # print(timer_id)
+        self.timer_id_incremental += 1
+        timer_id = self.timer_id_incremental  # assign an id equal to the index in the list
         self.virtual_timers.append(
             {"id": timer_id, "period": period, "callback": callback, "counter": 0, "one_shot": one_shot})
         return timer_id  # return the id
@@ -245,6 +231,22 @@ class SafeHelmet:
             return
         else:
             self.virtual_timers.pop(to_remove)  # remove the timer from the list
+
+    def _virtual_timer_callback(self, timer):
+        for vt in self.virtual_timers:
+            vt["counter"] += self.base_interval
+            if vt["counter"] >= vt["period"]:
+                vt["callback"]()
+                # print("period:{}, counter is: {}".format(vt["period"], vt["counter"]))
+                if vt["one_shot"]:
+                    self.oneshot_timer_removal_list.append(vt)
+                else:
+                    vt["counter"] = 0
+
+        for vt in self.oneshot_timer_removal_list:
+            self.virtual_timers.remove(vt)
+        self.oneshot_timer_removal_list.clear()
+
 
     # Manage BLE events (connection, disconnection, ...)
     def _irq(self, event, data):
@@ -319,6 +321,7 @@ class SafeHelmet:
             print(f"Errore nella lettura del sensore bh1750: {e}")
 
     def _set_preheated(self):
+        print("Preheating sequence terminated, MQ sensors are operative.")
         self.are_preheated = True
 
     def _sensor_preheating_start(self):
@@ -407,6 +410,7 @@ class SafeHelmet:
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
         between one send and another.
         """
+        print("starting data collection")
 
         self._dht_timer = self.create_virtual_timer(DHT_INTERVAL, self._read_dht)
         self._lux_timer = self.create_virtual_timer(LUX_INTERVAL, self._read_lux)
