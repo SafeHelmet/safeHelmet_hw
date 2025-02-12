@@ -518,7 +518,7 @@ class SafeHelmet:
             print("Percentage of time spent in incorrect posture: {}%".format(incorrect_posture_percent_raw * 100))
 
             # Create the payload
-            data_payload = struct.pack("ffffBB",
+            data_payload = struct.pack("fffBB",
                                        temperature,
                                        humidity,
                                        lux,
