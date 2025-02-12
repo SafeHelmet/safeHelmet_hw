@@ -342,6 +342,7 @@ class SafeHelmet:
                 self.gas_anomaly = 0b000
                 print(f"Errore nella lettura dei sensori MQ: {e}")
 
+
     def _get_orientation(self) -> float:
         return self.mpu.read_accel_data()['z']
 
@@ -461,6 +462,7 @@ class SafeHelmet:
             if self.gas_mask_gpio.value() == 0:  # device connected
                 wearables_bitmask |= (1 << 1)
 
+            
             # DATA MEAN AVERAGE CALCULATION
             calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
             temperature = calculate_mean(self._temperature)
@@ -494,13 +496,14 @@ class SafeHelmet:
             print("Percentage of time spent in incorrect posture: {}%".format(incorrect_posture_percent_raw * 100))
 
             # Crea il payload
-            data_payload = struct.pack("ffffBB",
+            data_payload = struct.pack("fffBB",
                                        temperature,
                                        humidity,
                                        lux,
                                        self.gas_anomaly,  # sensor_states,
                                        wearables_bitmask
                                        )
+
 
             print(
                 "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
