@@ -491,6 +491,10 @@ class SafeHelmet:
             humidity = calculate_mean(self._humidity)
             lux = calculate_mean(self._lux)
 
+            if temperature == humidity == lux == 0:
+                print("NO DATA")
+                return
+
             if self.gas_anomaly:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.led_notify()  # self.vibration_notify()
             else:  # if not you, maybe someone else in the worksite had some anomaly going on. Check for that and vibrate
