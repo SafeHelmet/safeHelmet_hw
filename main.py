@@ -42,7 +42,7 @@ PIN_GAS_MASK = 15
 PIN_STANDBY_LED = 2
 PIN_SEND_LED = 4
 PIN_ADV_LED = 17
-PIN_ANOMALY_LED = 16  # PIN_VIBRATION_MOTOR
+PIN_VIBRATION_MOTOR = 16
 PIN_SCL = 22
 PIN_SDA = 21
 
@@ -63,9 +63,6 @@ class SafeHelmet:
 
         self.adv_led = Pin(PIN_ADV_LED, Pin.OUT)
         self.adv_led.value(0)
-
-        self.anomaly_led = Pin(PIN_ANOMALY_LED, Pin.OUT)
-        self.anomaly_led.value(0)
 
         # BLE init and service/characteristics setup
         self.ble = ubluetooth.BLE()
@@ -146,8 +143,8 @@ class SafeHelmet:
         self.welding_mask_gpio = Pin(PIN_WELDING_MASK, Pin.IN, Pin.PULL_UP)
         self.gas_mask_gpio = Pin(PIN_GAS_MASK, Pin.IN, Pin.PULL_UP)
 
-        # self.vibration_gpio = Pin(PIN_VIBRATION_MOTOR, Pin.OUT, Pin.PULL_UP)
-        # self.vibration_gpio.value(1)
+        self.vibration_gpio = Pin(PIN_VIBRATION_MOTOR, Pin.OUT, Pin.PULL_UP)
+        self.vibration_gpio.value(0)
 
         # First value is total sum of readings, second value is number of readings
         self._temperature = [0, 0]
@@ -284,7 +281,7 @@ class SafeHelmet:
             print("Received command: {}".format(value))
 
     def _start_advertising(self):
-        name = b'SafeHelmet-01'
+        name = b'SafeHelmet-02'
         self.ble.gap_advertise(100,
                                b'\x02\x01\x06' +
                                b'\x03\x03\xf4\x7a' +
@@ -299,9 +296,6 @@ class SafeHelmet:
 
     def _toggle_standby_led(self):
         self.standby_led.value(not self.standby_led.value())
-
-    def _toggle_anomaly_led(self):
-        self.anomaly_led.value(not self.anomaly_led.value())
 
     #### DATA COLLECTING METHODS ####
 
@@ -352,7 +346,7 @@ class SafeHelmet:
         Activates the vibration motor for the specified duration in milliseconds.
         """
         print("vibrating motor")
-        self.vibration_gpio.value(0)  # Activate vibration
+        self.vibration_gpio.value(1)  # Activate vibration
         self.create_virtual_timer(duration_ms, self._vibration_stop, one_shot=True)
 
     def _vibration_stop(self):
@@ -360,35 +354,12 @@ class SafeHelmet:
         Callback function to stop the vibration motor after its duration.
         """
         print("stop vibrating motor")
-        self.vibration_gpio.value(1)  # Deactivate vibration
+        self.vibration_gpio.value(0)  # Deactivate vibration
 
     def vibration_notify(self):
         self.vibrate(500)
         self.create_virtual_timer(1000, lambda: self.vibrate(500), one_shot=True)
         self.create_virtual_timer(2000, lambda: self.vibrate(500), one_shot=True)
-
-    def led_vibrate(self, duration_ms):
-        """
-        Activates the LED for the specified duration in milliseconds to simulate vibration.
-        """
-        print("LED on (simulating vibration)")
-        self._toggle_anomaly_led()  # Turn on LED to simulate vibration
-        self.create_virtual_timer(duration_ms, self._led_stop, one_shot=True)
-
-    def _led_stop(self):
-        """
-        Callback function to turn off the LED after its duration.
-        """
-        print("LED off (stop simulating vibration)")
-        self._toggle_anomaly_led()  # Turn off LED
-
-    def led_notify(self):
-        """
-        Notifies with a series of LED flashes to simulate vibration notification.
-        """
-        self.led_vibrate(500)
-        self.create_virtual_timer(1000, lambda: self.led_vibrate(500), one_shot=True)
-        self.create_virtual_timer(2000, lambda: self.led_vibrate(500), one_shot=True)
 
     def _check_crash_and_posture(self):
         try:
@@ -496,11 +467,11 @@ class SafeHelmet:
                 return
 
             if self.gas_anomaly:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
-                self.led_notify()  # self.vibration_notify()
+                self.vibration_notify()
             else:  # if not you, maybe someone else in the worksite had some anomaly going on. Check for that and vibrate
                 self._feedback = self.ble.gatts_read(self._feedback_handle)
                 if self._feedback:
-                    self.led_notify()  # self.vibration_notify()
+                    self.vibration_notify()
                 self.ble.gatts_write(self._feedback_handle, '', True)
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
