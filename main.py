@@ -469,6 +469,10 @@ class SafeHelmet:
             humidity = calculate_mean(self._humidity)
             lux = calculate_mean(self._lux)
 
+            if temperature == humidity == lux == 0:
+                print("NO DATA")
+                return
+
             # WORKERS NOTIFICATION
             if self.gas_anomaly:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.vibration_notify()
@@ -566,7 +570,7 @@ class SafeHelmet:
 
 
 # Esegui il server BLE per sensori
-ble_sensor = SafeHelmet(data_interval=5)
+ble_sensor = SafeHelmet(data_interval=10)
 
 try:
     while True:
