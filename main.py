@@ -20,18 +20,21 @@ TELE-ESP-BOARD LEDS:
 
 BASE_INTERVAL = 100  # in ms
 ADV_LED_TIMER = 500
+STANDBY_LED_TIMER = 500
 DHT_INTERVAL = 2000
 LUX_INTERVAL = 2000
 CRASH_AND_POSTURE_INTERVAL = 100
 GAS_INTERVAL = 1000
-
+STANDBY_CHECK_INTERVAL = 5000
 GAS_WARMUP_TIME = 120000  # 2 minutes of heating
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
+MOVEMENT_CUMULATIVE_TRESHOLD = 90.0  # 15.0 with data_inteval = 5
 
 POSTURE_Z_MIN = 4.0  # Z must be at least 7.0 m/s^2
 POSTURE_XY_MAX = 3.0  # X e Y must be included within ±3.0 m/s^2
+G = 9.81
 
 PIN_DHT = 5
 PIN_MQ2 = 18
@@ -366,7 +369,7 @@ class SafeHelmet:
             # Read the accelerometer data
             accel_data = self.mpu.read_accel_data()
             x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-            module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in g
+            module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / G  # in g
 
             # Crash detection
             self._accel_stats["m"] = [
@@ -441,7 +444,7 @@ class SafeHelmet:
         if not self._connections:
             return
 
-        if self.last_accel["z"] < STANDBY_TRESHOLD and self.movement_cumulative < 15.0:
+        if self.last_accel["z"] < STANDBY_TRESHOLD and self.movement_cumulative < MOVEMENT_CUMULATIVE_TRESHOLD:
             self.movement_cumulative = 0
             self._standby_mode()
 
@@ -541,8 +544,8 @@ class SafeHelmet:
 
         self.stop_virtual_timer(self.data_timer_id)
         self.data_timer_id = None
-        self.standby_led_timer_id = self.create_virtual_timer(500, self._toggle_standby_led)
-        self.standby_check_timer_id = self.create_virtual_timer(5000, self._check_standby_exit)
+        self.standby_led_timer_id = self.create_virtual_timer(STANDBY_LED_TIMER, self._toggle_standby_led)
+        self.standby_check_timer_id = self.create_virtual_timer(STANDBY_CHECK_INTERVAL, self._check_standby_exit)
 
     def _check_standby_exit(self):
         if self._get_orientation() > STANDBY_TRESHOLD:
@@ -562,7 +565,7 @@ class SafeHelmet:
 
 
 # Run the BLE server for sensors
-ble_sensor = SafeHelmet(data_interval=5)
+ble_sensor = SafeHelmet(data_interval=30)
 
 try:
     while True:
