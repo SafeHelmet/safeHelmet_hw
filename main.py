@@ -23,18 +23,19 @@ TELE-ESP-BOARD LEDS:
 
 BASE_INTERVAL = 100
 ADV_LED_TIMER = 500
-DHT_INTERVAL = 2000
+DHT_INTERVAL = 3000
 LUX_INTERVAL = 2000
 CRASH_AND_POSTURE_INTERVAL = 100  # in ms
 GAS_INTERVAL = 1000  # in ms
 
-GAS_WARMUP_TIME = 20000  # 2 minuti di riscaldamento
+GAS_WARMUP_TIME = 120000  # 2 minuti di riscaldamento
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
+MOVEMENT_THRESHOLD = 60
 
-POSTURE_Z_MIN = 4.0  # Z deve essere almeno 7.0 m/s^2
-POSTURE_XY_MAX = 3.0  # X e Y devono essere compresi entro ±3.0 m/s^2
+POSTURE_Z_MIN = 6.0  # Z deve essere almeno 7.0 m/s^2
+POSTURE_XY_MAX = 6.0  # X e Y devono essere compresi entro ±3.0 m/s^2
 
 PIN_DHT = 18
 PIN_MQ2 = 23
@@ -50,7 +51,7 @@ PIN_SDA = 21
 
 
 class SafeHelmet:
-    def __init__(self, data_interval=5):
+    def __init__(self, data_interval=30):
 
         print("\nInitializing SafeHelmet...")
         # I2C init
@@ -350,7 +351,6 @@ class SafeHelmet:
         """
         Activates the vibration motor for the specified duration in milliseconds.
         """
-        print("vibrating motor")
         self.vibration_gpio.value(0)  # Activate vibration
         self.create_virtual_timer(duration_ms, self._vibration_stop, one_shot=True)
 
@@ -358,10 +358,10 @@ class SafeHelmet:
         """
         Callback function to stop the vibration motor after its duration.
         """
-        print("stop vibrating motor")
         self.vibration_gpio.value(1)  # Deactivate vibration
 
     def vibration_notify(self):
+        print("vibrating motor")
         self.vibrate(500)
         self.create_virtual_timer(1000, lambda: self.vibrate(500), one_shot=True)
         self.create_virtual_timer(2000, lambda: self.vibrate(500), one_shot=True)
@@ -386,7 +386,8 @@ class SafeHelmet:
                 self._accel_stats[axis][0] += value
                 self._accel_stats[axis][1] += value ** 2
                 self._accel_stats[axis][2] += 1
-
+            
+            
             # Verifica se i valori sono fuori dai limiti
             if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
                 self.posture_incorrect_time += CRASH_AND_POSTURE_INTERVAL  # Incrementa il tempo scorretto
@@ -409,7 +410,7 @@ class SafeHelmet:
         Start collecting data from all sensors and calculating mean averages. Each sensor has a different priority in
         worker's safety, thus the need for such a method, that allows to set different retrieval intervals.
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
-        between one send and another.
+        between one sending and another.
         """
         print("starting data collection")
 
@@ -447,7 +448,7 @@ class SafeHelmet:
         if not self._connections:
             return
 
-        if self.last_accel["z"] < STANDBY_TRESHOLD and self.movement_cumulative < 15.0:
+        if self.last_accel["z"] < STANDBY_TRESHOLD and self.movement_cumulative < MOVEMENT_THRESHOLD:
             self.movement_cumulative = 0
             self._standby_mode()
 
@@ -570,7 +571,7 @@ class SafeHelmet:
 
 
 # Esegui il server BLE per sensori
-ble_sensor = SafeHelmet(data_interval=10)
+ble_sensor = SafeHelmet(data_interval=20)
 
 try:
     while True:
