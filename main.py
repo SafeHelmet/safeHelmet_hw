@@ -33,7 +33,7 @@ GAS_WARMUP_TIME = 120000  # 2 minutes of heating
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
-MOVEMENT_THRESHOLD = 60
+MOVEMENT_THRESHOLD = 90
 
 POSTURE_Z_MIN = 6.0  # Z deve essere almeno 7.0 m/s^2
 POSTURE_XY_MAX = 6.0  # X e Y devono essere compresi entro ±3.0 m/s^2
@@ -574,7 +574,7 @@ class SafeHelmet:
 
 
 # Run the BLE server for sensors
-ble_sensor = SafeHelmet(data_interval=20)
+ble_sensor = SafeHelmet(data_interval=30)
 
 try:
     while True:
