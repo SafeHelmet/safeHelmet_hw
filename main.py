@@ -30,11 +30,12 @@ GAS_WARMUP_TIME = 120000  # 2 minutes of heating
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
-MOVEMENT_CUMULATIVE_TRESHOLD = 90.0  # 15.0 with data_inteval = 5
+MOVEMENT_CUMULATIVE_TRESHOLD = 60.0  # 15.0 with data_inteval = 5
 
-POSTURE_Z_MIN = 4.0  # Z must be at least 7.0 m/s^2
-POSTURE_XY_MAX = 3.0  # X e Y must be included within ±3.0 m/s^2
+POSTURE_Z_MIN = 6.0  # Z must be at least 7.0 m/s^2
+POSTURE_XY_MAX = 6.0  # X e Y must be included within ±3.0 m/s^2
 G = 9.81
+DECIMAL_ROUND = 2  # when sending data via BLE
 
 PIN_DHT = 5
 PIN_MQ2 = 18
@@ -51,7 +52,7 @@ PIN_SDA = 21
 
 
 class SafeHelmet:
-    def __init__(self, data_interval=5):
+    def __init__(self, data_interval=30):
 
         print("\nInitializing SafeHelmet...")
         # I2C init
@@ -497,9 +498,9 @@ class SafeHelmet:
 
             # Create the payload
             data_payload = struct.pack("fffBB",
-                                       temperature,
-                                       humidity,
-                                       lux,
+                                       round(temperature, DECIMAL_ROUND),
+                                       round(humidity, DECIMAL_ROUND),
+                                       round(lux, DECIMAL_ROUND),
                                        self.gas_anomaly,
                                        wearables_bitmask
                                        )
@@ -509,19 +510,19 @@ class SafeHelmet:
                     temperature, humidity, lux, self._accel_stats["current_max"], self.gas_anomaly, wearables_bitmask))
 
             accel_payload_1 = struct.pack("fffff",
-                                          accel_dict["x"]["mean"],
-                                          accel_dict["y"]["mean"],
-                                          accel_dict["z"]["mean"],
-                                          accel_dict["m"]["mean"],
-                                          accel_dict["m"]["std_dev"]
+                                          round(accel_dict["x"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["y"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["z"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["m"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["m"]["std_dev"], DECIMAL_ROUND)
                                           )
 
             accel_payload_2 = struct.pack("fffff",
-                                          accel_dict["x"]["std_dev"],
-                                          accel_dict["y"]["std_dev"],
-                                          accel_dict["z"]["std_dev"],
-                                          self._accel_stats["current_max"],
-                                          incorrect_posture_percent_raw
+                                          round(accel_dict["x"]["std_dev"], DECIMAL_ROUND),
+                                          round(accel_dict["y"]["std_dev"], DECIMAL_ROUND),
+                                          round(accel_dict["z"]["std_dev"], DECIMAL_ROUND),
+                                          round(self._accel_stats["current_max"], DECIMAL_ROUND),
+                                          round(incorrect_posture_percent_raw, DECIMAL_ROUND)
                                           )
 
             # Send payload to connected devices
@@ -565,7 +566,7 @@ class SafeHelmet:
 
 
 # Run the BLE server for sensors
-ble_sensor = SafeHelmet(data_interval=30)
+ble_sensor = SafeHelmet(data_interval=20)
 
 try:
     while True:
