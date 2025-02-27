@@ -17,18 +17,19 @@ TELE-ESP-BOARD LEDS:
     G: ?? 
 '''
 
-#  TEMP_THRESHOLD = 28.0  # Temperatura > 28 °C
-#  HUMIDITY_THRESHOLD = 65.0  # Umidità > 65 %
-#  LUX_THRESHOLD = 800.0  # Luminosità > 800 lux
+#  TEMP_THRESHOLD = 28.0  # Temperature > 28 °C
+#  HUMIDITY_THRESHOLD = 65.0  # Humidity > 65 %
+#  LUX_THRESHOLD = 800.0  # Brightness > 800 lux
 
-BASE_INTERVAL = 100
+BASE_INTERVAL = 100  # in ms
 ADV_LED_TIMER = 500
+STANDBY_LED_TIMER = 500
 DHT_INTERVAL = 3000
 LUX_INTERVAL = 2000
-CRASH_AND_POSTURE_INTERVAL = 100  # in ms
-GAS_INTERVAL = 1000  # in ms
-
-GAS_WARMUP_TIME = 120000  # 2 minuti di riscaldamento
+CRASH_AND_POSTURE_INTERVAL = 100
+GAS_INTERVAL = 1000
+STANDBY_CHECK_INTERVAL = 5000
+GAS_WARMUP_TIME = 120000  # 2 minutes of heating
 
 STANDBY_TRESHOLD = -2.0
 WAKEUP_TRESHOLD = 3.0
@@ -36,6 +37,8 @@ MOVEMENT_THRESHOLD = 60
 
 POSTURE_Z_MIN = 6.0  # Z deve essere almeno 7.0 m/s^2
 POSTURE_XY_MAX = 6.0  # X e Y devono essere compresi entro ±3.0 m/s^2
+G = 9.81
+DECIMAL_ROUND = 2  # when sending data via BLE
 
 PIN_DHT = 18
 PIN_MQ2 = 23
@@ -48,6 +51,8 @@ PIN_SEND_LED = 4
 PIN_ADV_LED = 25
 PIN_SCL = 22
 PIN_SDA = 21
+
+
 
 
 class SafeHelmet:
@@ -130,8 +135,8 @@ class SafeHelmet:
 
         # Sensors setup and init
         self.standby = False
-        self.posture_incorrect_time = 0  # Tempo accumulato in postura scorretta (in ms)
-        self.posture_last_checked = 0  # Timestamp dell'ultima verifica
+        self.posture_incorrect_time = 0  # Accumulated time in incorrect posture (in ms)
+        self.posture_last_checked = 0  # Timestamp of last verification
         self.gas_anomaly = 0b000
 
         self.dht_sensor = dht.DHT11(Pin(PIN_DHT))
@@ -154,14 +159,14 @@ class SafeHelmet:
         self._humidity = [0, 0]
         self._lux = [0, 0]
 
-        self._accel_stats = {"x": [0, 0, 0],  # somma, somma al quadrato, letture
+        self._accel_stats = {"x": [0, 0, 0],  # sum, square sum, readings
                              "y": [0, 0, 0],
                              "z": [0, 0, 0],
-                             "m": [0, 0, 0],  # modulo accelerazione
+                             "m": [0, 0, 0],  # acceleration module
                              "current_max": 0}
 
-        self.movement_cumulative = 0  # Movimento cumulativo tra due chiamate a send_data()
-        self.last_accel = {"x": 0, "y": 0, "z": 0}  # Ultima lettura dell'accelerometro
+        self.movement_cumulative = 0  # Cumulative movement between two calls to send_data()
+        self.last_accel = {"x": 0, "y": 0, "z": 0}  # Last reading of the accelerometer
 
         # Physical and virtual timers init
         self.data_interval = data_interval
@@ -221,7 +226,7 @@ class SafeHelmet:
         return timer_id  # return the id
 
     def stop_virtual_timer(self, timer_id):
-        # print("deleting timer {}".format(timer_id))
+        # print("Deleting timer {}".format(timer_id))
         to_remove = None
         for i, vt in enumerate(self.virtual_timers):
             if vt["id"] == timer_id:
@@ -312,14 +317,14 @@ class SafeHelmet:
             self._humidity[0] += self.dht_sensor.humidity()
             self._humidity[1] += 1
         except Exception as e:
-            print(f"Errore nella lettura del sensore dht11: {e}")
+            print(f"Sensor reading error dht11: {e}")
 
     def _read_lux(self):
         try:
             self._lux[0] += self.light_sensor.luminance()
             self._lux[1] += 1
         except Exception as e:
-            print(f"Errore nella lettura del sensore bh1750: {e}")
+            print(f"Sensor reading error bh1750: {e}")
 
     def _set_preheated(self):
         print("Preheating sequence terminated, MQ sensors are operative.")
@@ -331,17 +336,17 @@ class SafeHelmet:
     def _read_gas(self):
         if self.are_preheated:
             try:
-                if not self.mq2.value():  # MQ2 rileva gas
-                    self.gas_anomaly |= (1 << 2)  # Imposta il bit più significativo (bit 2)
+                if not self.mq2.value():  # MQ2 detects gas
+                    self.gas_anomaly |= (1 << 2)  # Set the most significant bit (bit 2)
 
-                if not self.mq4.value():  # MQ4 rileva gas
-                    self.gas_anomaly |= (1 << 1)  # Imposta il bit intermedio (bit 1)
+                if not self.mq4.value():  # MQ4 detects gas
+                    self.gas_anomaly |= (1 << 1)  # Set the intermediate bit (bit 1)
 
-                if not self.mq7.value():  # MQ7 rileva gas
-                    self.gas_anomaly |= (1 << 0)  # Imposta il bit meno significativo (bit 0)
+                if not self.mq7.value():  # MQ7 detects gas
+                    self.gas_anomaly |= (1 << 0)  # Set the least significant bit (bit 0)
             except Exception as e:
                 self.gas_anomaly = 0b000
-                print(f"Errore nella lettura dei sensori MQ: {e}")
+                print(f"Error in reading MQ sensors: {e}")
 
 
     def _get_orientation(self) -> float:
@@ -368,10 +373,10 @@ class SafeHelmet:
 
     def _check_crash_and_posture(self):
         try:
-            # Leggi i dati dell'accelerometro
+            # Read the accelerometer data
             accel_data = self.mpu.read_accel_data()
             x, y, z = accel_data["x"], accel_data["y"], accel_data["z"]
-            module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / 9.81  # in g
+            module = ((x ** 2 + y ** 2 + z ** 2) ** 0.5) / G  # in g
 
             # Crash detection
             self._accel_stats["m"] = [
@@ -386,24 +391,23 @@ class SafeHelmet:
                 self._accel_stats[axis][0] += value
                 self._accel_stats[axis][1] += value ** 2
                 self._accel_stats[axis][2] += 1
-            
-            
-            # Verifica se i valori sono fuori dai limiti
-            if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
-                self.posture_incorrect_time += CRASH_AND_POSTURE_INTERVAL  # Incrementa il tempo scorretto
 
-            # Calcola la variazione rispetto alla lettura precedente (movimento)
+            # Check if values are outside the limits
+            if abs(x) > POSTURE_XY_MAX or abs(y) > POSTURE_XY_MAX or z < POSTURE_Z_MIN:
+                self.posture_incorrect_time += CRASH_AND_POSTURE_INTERVAL  # Increases the incorrect time
+
+            # Calculate the change from previous reading (movement)
             delta_x = x - self.last_accel["x"]
             delta_y = y - self.last_accel["y"]
             delta_z = z - self.last_accel["z"]
 
-            # Aggiungi la variazione cumulativa al movimento totale
+            # Add cumulative variation to total movement
             self.movement_cumulative += (delta_x ** 2 + delta_y ** 2 + delta_z ** 2) ** 0.5
 
-            # Aggiorna l'ultima lettura
+            # Update the last reading
             self.last_accel = {"x": x, "y": y, "z": z}
         except Exception as e:
-            print(f"Errore nella lettura del sensore mpu6050: {e}")
+            print(f"Error in reading sensor mpu6050: {e}")
 
     def _start_data_collection(self):
         """
@@ -412,8 +416,7 @@ class SafeHelmet:
         At the time of data packing and sending through BLE, mean averages are calculated on all the data obtained
         between one sending and another.
         """
-        print("starting data collection")
-
+        print("Starting data collection")
         self._dht_timer = self.create_virtual_timer(DHT_INTERVAL, self._read_dht)
         self._lux_timer = self.create_virtual_timer(LUX_INTERVAL, self._read_lux)
         self._gas_timer = self.create_virtual_timer(GAS_INTERVAL, self._read_gas)
@@ -424,7 +427,7 @@ class SafeHelmet:
         """
         Stop data collection.
         """
-        print("data collection stopped")
+        print("Data collection stopped")
         self.stop_virtual_timer(self._dht_timer)
         self.stop_virtual_timer(self._lux_timer)
         self.stop_virtual_timer(self._crash_detection_and_posture_timer)
@@ -463,7 +466,7 @@ class SafeHelmet:
             if self.gas_mask_gpio.value() == 0:  # device connected
                 wearables_bitmask |= (1 << 1)
 
-            
+
             # DATA MEAN AVERAGE CALCULATION
             calculate_mean = lambda data: data[0] / data[1] if data[1] != 0 else 0
             temperature = calculate_mean(self._temperature)
@@ -500,45 +503,45 @@ class SafeHelmet:
             incorrect_posture_percent_raw = (self.posture_incorrect_time / (self.data_interval * 1000))
             print("Percentage of time spent in incorrect posture: {}%".format(incorrect_posture_percent_raw * 100))
 
-            # Crea il payload
+            # Create the payload
             data_payload = struct.pack("fffBB",
-                                       temperature,
-                                       humidity,
-                                       lux,
-                                       self.gas_anomaly,  # sensor_states,
+                                       round(temperature, DECIMAL_ROUND),
+                                       round(humidity, DECIMAL_ROUND),
+                                       round(lux, DECIMAL_ROUND),
+                                       self.gas_anomaly,
                                        wearables_bitmask
                                        )
-
 
             print(
                 "Temp: {:.1f} / Hum: {:.1f} / Lux: {:.1f} / Crash: {:.2f} / Sensor States: {:03b} / Wearables {:02b}".format(
                     temperature, humidity, lux, self._accel_stats["current_max"], self.gas_anomaly, wearables_bitmask))
 
             accel_payload_1 = struct.pack("fffff",
-                                          accel_dict["x"]["mean"],
-                                          accel_dict["y"]["mean"],
-                                          accel_dict["z"]["mean"],
-                                          accel_dict["m"]["mean"],
-                                          accel_dict["m"]["std_dev"]
+                                          round(accel_dict["x"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["y"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["z"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["m"]["mean"], DECIMAL_ROUND),
+                                          round(accel_dict["m"]["std_dev"], DECIMAL_ROUND)
                                           )
 
             accel_payload_2 = struct.pack("fffff",
-                                          accel_dict["x"]["std_dev"],
-                                          accel_dict["y"]["std_dev"],
-                                          accel_dict["z"]["std_dev"],
-                                          self._accel_stats["current_max"],
-                                          incorrect_posture_percent_raw
+                                          round(accel_dict["x"]["std_dev"], DECIMAL_ROUND),
+                                          round(accel_dict["y"]["std_dev"], DECIMAL_ROUND),
+                                          round(accel_dict["z"]["std_dev"], DECIMAL_ROUND),
+                                          round(self._accel_stats["current_max"], DECIMAL_ROUND),
+                                          round(incorrect_posture_percent_raw, DECIMAL_ROUND)
                                           )
 
-            # Invia il payload ai dispositivi connessi
+            # Send payload to connected devices
             for conn_handle in self._connections:
                 self.ble.gatts_notify(conn_handle, self._data_handle, data_payload)
                 self.ble.gatts_notify(conn_handle, self._accel_handle_1, accel_payload_1)
                 self.ble.gatts_notify(conn_handle, self._accel_handle_2, accel_payload_2)
 
+
             self.send_led.value(0)
 
-            # Pulisce i dati raccolti
+            # Clean up the data collected
             self._clean_collected_data()
 
     def _standby_mode(self):
@@ -550,8 +553,8 @@ class SafeHelmet:
 
         self.stop_virtual_timer(self.data_timer_id)
         self.data_timer_id = None
-        self.standby_led_timer_id = self.create_virtual_timer(500, self._toggle_standby_led)
-        self.standby_check_timer_id = self.create_virtual_timer(5000, self._check_standby_exit)
+        self.standby_led_timer_id = self.create_virtual_timer(STANDBY_LED_TIMER, self._toggle_standby_led)
+        self.standby_check_timer_id = self.create_virtual_timer(STANDBY_CHECK_INTERVAL, self._check_standby_exit)
 
     def _check_standby_exit(self):
         if self._get_orientation() > STANDBY_TRESHOLD:
@@ -570,7 +573,7 @@ class SafeHelmet:
             self.data_timer_id = self.create_virtual_timer(self.data_interval * 1000, self._send_data)
 
 
-# Esegui il server BLE per sensori
+# Run the BLE server for sensors
 ble_sensor = SafeHelmet(data_interval=20)
 
 try:
