@@ -21,7 +21,7 @@ TELE-ESP-BOARD LEDS:
 BASE_INTERVAL = 100  # in ms
 ADV_LED_TIMER = 500
 STANDBY_LED_TIMER = 500
-DHT_INTERVAL = 2000
+DHT_INTERVAL = 3000
 LUX_INTERVAL = 2000
 CRASH_AND_POSTURE_INTERVAL = 100
 GAS_INTERVAL = 1000
@@ -283,6 +283,11 @@ class SafeHelmet:
             conn_handle, value = data
             value = bytes(value).decode('utf-8')
             print("Received command: {}".format(value))
+            if value and not self.standby:  # vibration in case of anomalies received via BLE
+                self._feedback = self.ble.gatts_read(self._feedback_handle)
+                if self._feedback:
+                    self.vibration_notify()
+                self.ble.gatts_write(self._feedback_handle, '', True)
 
     def _start_advertising(self):
         name = b'SafeHelmet-02'
@@ -472,11 +477,6 @@ class SafeHelmet:
 
             if self.gas_anomaly:  # if mask has some bits active, notify the worker for some anomaly through vibration motor
                 self.vibration_notify()
-            else:  # if not you, maybe someone else in the worksite had some anomaly going on. Check for that and vibrate
-                self._feedback = self.ble.gatts_read(self._feedback_handle)
-                if self._feedback:
-                    self.vibration_notify()
-                self.ble.gatts_write(self._feedback_handle, '', True)
 
             # POSTURE MEAN AVERAGE AND CRASH DETECTION
             accel_dict = {}
